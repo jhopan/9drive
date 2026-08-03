@@ -37,7 +37,7 @@ async function main() {
       clientIdEncrypted: encryptText(clientId!),
       clientSecretEncrypted: encryptText(clientSecret!),
       redirectUri,
-      scopes,
+      scopes: JSON.stringify(scopes),
       status: 'active',
     },
   })

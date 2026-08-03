@@ -4,7 +4,6 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { getAuthedGoogleClient, syncGoogleQuota, ensureGoogleAppFolder } from '../google/google.service.js'
-import { createAuditLog } from '../../utils/audit.js'
 
 export const folderRouter = Router()
 folderRouter.use(requireAuth)
@@ -162,7 +161,6 @@ folderRouter.post('/', async (req: AuthRequest, res, next) => {
       },
       select: { id: true, name: true, color: true, iconUrl: true, parentId: true, providerFolderId: true, createdAt: true, updatedAt: true },
     })
-    await createAuditLog(req.user!.id, 'CREATE_FOLDER', 'folder', folder.id, { name: folder.name })
     return res.status(201).json({ folder: serializeFolder(folder) })
   } catch (error) {
     return next(error)
@@ -248,7 +246,6 @@ folderRouter.patch('/:id', async (req: AuthRequest, res, next) => {
       where: { id: folderId, userId: req.user!.id },
       select: { id: true, name: true, color: true, iconUrl: true, parentId: true, providerFolderId: true, createdAt: true, updatedAt: true },
     })
-    await createAuditLog(req.user!.id, 'UPDATE_FOLDER', 'folder', updated.id, { name: updated.name, updates: body })
     return res.json({ folder: serializeFolder(updated) })
   } catch (error) {
     return next(error)
@@ -303,8 +300,6 @@ folderRouter.delete('/:id', async (req: AuthRequest, res, next) => {
     await prisma.file.updateMany({ where: { id: { in: files.map((file) => file.id) } }, data: { status: 'deleted', deletedAt: new Date() } })
     await prisma.folder.updateMany({ where: { id: { in: [...folderIds] }, userId: req.user!.id }, data: { deletedAt: new Date() } })
     for (const accountId of syncedAccountIds) await syncGoogleQuota(accountId).catch(() => undefined)
-
-    await createAuditLog(req.user!.id, 'DELETE_FOLDER', 'folder', root.id, { name: root.name })
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)

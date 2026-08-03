@@ -24,7 +24,7 @@ providerConfigRouter.post('/google', async (req: AuthRequest, res, next) => {
         clientIdEncrypted: encryptText(body.clientId),
         clientSecretEncrypted: encryptText(body.clientSecret),
         redirectUri: body.redirectUri,
-        scopes: body.scopes,
+        scopes: JSON.stringify(body.scopes),
       },
     })
     return res.status(201).json({ id: config.id, provider: config.provider, redirectUri: config.redirectUri, scopes: config.scopes, status: config.status })

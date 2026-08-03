@@ -16,14 +16,19 @@ function bytesToString(value: bigint | number | string | null | undefined) {
 const routingModes = ['most_available', 'round_robin', 'priority'] as const
 const routingPolicySchema = z.object({ mode: z.enum(routingModes), priorityAccountIds: z.array(z.string().min(1)).max(100).optional() })
 
-function normalizePriorityAccountIds(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+function normalizePriorityAccountIds(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 async function getOrCreateRoutingPolicy(userId: string) {
   return prisma.uploadRoutingPolicy.upsert({
     where: { userId },
-    create: { userId, mode: 'most_available', priorityAccountIds: [] },
+    create: { userId, mode: 'most_available', priorityAccountIds: '[]' },
     update: {},
   })
 }
@@ -77,8 +82,8 @@ storageRouter.patch('/routing-policy', async (req: AuthRequest, res, next) => {
     const priorityAccountIds = accountIds.filter((id) => validIds.has(id))
     const policy = await prisma.uploadRoutingPolicy.upsert({
       where: { userId: req.user!.id },
-      create: { userId: req.user!.id, mode: body.mode, priorityAccountIds, roundRobinCursor: 0 },
-      update: { mode: body.mode, priorityAccountIds, ...(body.mode !== 'round_robin' ? { roundRobinCursor: 0 } : {}) },
+      create: { userId: req.user!.id, mode: body.mode, priorityAccountIds: JSON.stringify(priorityAccountIds), roundRobinCursor: 0 },
+            update: { mode: body.mode, priorityAccountIds: JSON.stringify(priorityAccountIds), ...(body.mode !== 'round_robin' ? { roundRobinCursor: 0 } : {}) },
     })
     return res.json({ policy: { id: policy.id, mode: policy.mode, priorityAccountIds: normalizePriorityAccountIds(policy.priorityAccountIds), roundRobinCursor: policy.roundRobinCursor } })
   } catch (error) {

@@ -76,7 +76,7 @@ authRouter.get('/google/url', async (_req, res, next) => {
       access_type: 'offline',
       prompt: 'consent',
       include_granted_scopes: true,
-      scope: config.scopes as string[],
+      scope: JSON.parse(config.scopes) as string[],
       state,
     })
     return res.json({ url })
@@ -126,7 +126,7 @@ authRouter.get('/google/callback', async (req, res) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: oauthState.providerConfig.scopes,
         status: 'connected',
       },
       update: {
@@ -137,7 +137,7 @@ authRouter.get('/google/callback', async (req, res) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: oauthState.providerConfig.scopes,
         status: 'connected',
       },
     })
