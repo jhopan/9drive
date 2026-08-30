@@ -19,7 +19,7 @@ func newTestApp(t *testing.T) *App {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	app := &App{DB: db, Config: Config{JWTSecret: "test-secret-long-enough-for-jwt", TokenKey: "test-token-key-32-bytes-minimum", FrontendURL: "http://localhost:5173"}, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files"}
+	app := &App{DB: db, Config: Config{JWTSecret: "test-secret-long-enough-for-jwt", TokenKey: "12345678901234567890123456789012", FrontendURL: "http://localhost:5173"}, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files"}
 	if err := app.migrate(); err != nil {
 		t.Fatal(err)
 	}

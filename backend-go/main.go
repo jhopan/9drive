@@ -499,7 +499,14 @@ func (a *App) getGoogleToken(ctx context.Context, accountID string, forceRefresh
 }
 
 func (a *App) syncQuota(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
 	accountID := r.PathValue("id")
+	var ownerID string
+	err := a.DB.QueryRow(`SELECT user_id FROM connected_accounts WHERE id=?`, accountID).Scan(&ownerID)
+	if err != nil || ownerID != user.ID {
+		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "Account not found.")
+		return
+	}
 	accessToken, err := a.getGoogleToken(r.Context(), accountID, false)
 	if err != nil {
 		writeError(w, 500, "QUOTA_FAILED", "Unable to read account token.")

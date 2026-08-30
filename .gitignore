@@ -12,6 +12,8 @@ backend/.env.*.local
 # Databases
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # Local env is non-secret by default, keep example in repo instead.
 frontend/.env.local

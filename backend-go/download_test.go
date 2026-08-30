@@ -27,7 +27,8 @@ func TestDownloadStreamsGoogleFileWithRange(t *testing.T) {
 	defer api.Close()
 	app.GoogleDriveAPIURL = api.URL + "/drive/v3"
 	token, user := registerAndLogin(t, app, "download@example.test")
-	_, err := app.DB.Exec(`INSERT INTO connected_accounts (id,user_id,provider,provider_account_id,email,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes) VALUES (?,?,?,?,?,?,?,?,?)`, "account", user.ID, "google_drive", "google", "drive@example.test", app.encrypt("access"), app.encrypt("refresh"), "2099-01-01T00:00:00Z", "[]")
+	_, _ = app.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri) VALUES (?,?,?,?,?,?)`, "config", user.ID, "google_drive", app.encrypt("client"), app.encrypt("secret"), "http://localhost:4000/callback")
+	_, err := app.DB.Exec(`INSERT INTO connected_accounts (id,user_id,provider,provider_account_id,email,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,provider_config_id) VALUES (?,?,?,?,?,?,?,?,?,?)`, "account", user.ID, "google_drive", "google", "drive@example.test", app.encrypt("access"), app.encrypt("refresh"), "2099-01-01T00:00:00Z", "[]", "config")
 	if err != nil {
 		t.Fatal(err)
 	}
