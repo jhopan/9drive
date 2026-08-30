@@ -2,21 +2,16 @@ import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 import { Outlet, useOutletContext, NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Bell,
-  Braces,
   FileArchive,
   Gauge,
-  History,
   LogOut,
   Menu,
   Moon,
   MoreVertical,
   Search,
   Settings,
-  Share2,
   SlidersHorizontal,
-  Star,
   Sun,
-  Trash2,
   X,
   ShieldCheck,
   HardDrive,
@@ -30,19 +25,13 @@ import { BrandLogo } from '@/components/drive/BrandLogo'
 import { Input } from '@/components/ui/input'
 import { apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
-import { clearAuthSession, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
-import { getGravatarUrl } from '@/lib/gravatar'
+import { clearAuthSession, getStoredUser, updateStoredUser, setAuthSession, type AuthUser } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 
 const menu = [
   { label: 'All Files', icon: FileArchive, href: '/all-files' },
   { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
-  { label: 'Shared With Me', icon: Share2, href: '/shared' },
-  { label: 'Starred', icon: Star, href: '/starred', disabled: true },
-  { label: 'Recycle Bin', icon: Trash2, href: '/trash' },
-  { label: 'Activity Log', icon: History, href: '/activity' },
-  { label: 'Setting', icon: Settings, href: '/settings' },
-  { label: 'API Keys', icon: Braces, href: '/api' },
+  { label: 'Settings', icon: Settings, href: '/settings' },
 ]
 
 type StorageSummary = {
@@ -111,8 +100,6 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
   const used = Number(storage?.usedBytes ?? 0)
   const total = Number(storage?.totalBytes ?? 0)
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
-  const [profileImageUrl, setProfileImageUrl] = useState('')
-  const [avatarError, setAvatarError] = useState(false)
   const items = [
     ['Photo', formatBytes(breakdown.photo), 'bg-lime-500'],
     ['Video', formatBytes(breakdown.video), 'bg-yellow-400'],
@@ -120,10 +107,6 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
     ['Free Storage', formatBytes(storage?.availableBytes), 'bg-orange-500'],
   ]
 
-  useEffect(() => {
-    setAvatarError(false)
-    getGravatarUrl(user?.email, 64).then(setProfileImageUrl).catch(() => setProfileImageUrl(''))
-  }, [user?.email])
 
   return (
     <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl p-4 lg:border-r">
@@ -133,18 +116,9 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
       </div>
 
       <div className="flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
-        {!profileImageUrl || avatarError ? (
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-sm border border-blue-400/20">
-            {(user?.name ?? user?.email ?? 'U').trim().charAt(0).toUpperCase()}
-          </div>
-        ) : (
-          <img
-            src={profileImageUrl}
-            alt="User avatar"
-            className="h-8 w-8 rounded-full border border-slate-200 object-cover"
-            onError={() => setAvatarError(true)}
-          />
-        )}
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-sm border border-blue-400/20">
+          {(user?.name ?? user?.email ?? 'U').trim().charAt(0).toUpperCase()}
+        </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[15px] font-bold text-slate-900 leading-none">{user?.name ?? 'User'}</p>
           <p className="truncate text-xs text-slate-500 mt-1">{user?.email ?? 'Loading...'}</p>
@@ -153,12 +127,7 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
       </div>
 
       <nav className="grid gap-1">
-        {menu.map((item) => item.disabled ? (
-          <button key={item.label} type="button" disabled className="inline-flex h-10 cursor-not-allowed items-center gap-2 rounded-xl px-3.5 text-[13px] font-bold text-slate-400 opacity-60">
-            <item.icon className="h-4 w-4" />
-            {item.label}
-          </button>
-        ) : (
+        {menu.map((item) => (
           <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-10 items-center gap-2.5 rounded-xl px-3.5 text-[13px] font-bold transition-all border border-transparent', isActive ? 'bg-blue-600/10 text-blue-600 border-blue-600/10 shadow-sm' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
             <item.icon className="h-4 w-4" />
             {item.label}
@@ -215,6 +184,36 @@ export function DriveLayout() {
   const [breakdown, setBreakdown] = useState<StorageBreakdown>({ photo: '0', video: '0', document: '0' })
   const [infoOpen, setInfoOpen] = useState(false)
   const [headerActions, setHeaderActions] = useState<ReactNode>(null)
+
+  const [setupName, setSetupName] = useState('')
+  const [setupEmail, setSetupEmail] = useState('')
+  const [setupPassword, setSetupPassword] = useState('')
+  const [setupError, setSetupError] = useState('')
+  const [setupLoading, setSetupLoading] = useState(false)
+  const isDefaultAdmin = user?.email === 'admin@gmail.com'
+
+  async function handleSetupAdmin(e: FormEvent) {
+    e.preventDefault()
+    setSetupError('')
+    setSetupLoading(true)
+    try {
+      const res = await apiFetch<{ accessToken: string; refreshToken: string; user: AuthUser }>('/auth/me', {
+        method: 'PUT',
+        body: JSON.stringify({ name: setupName, email: setupEmail, password: setupPassword })
+      })
+      if (!res.user || !res.accessToken) {
+        throw new Error('Invalid response from server')
+      }
+      setAuthSession(res.accessToken, res.refreshToken, res.user)
+      setUser(res.user)
+      window.location.reload()
+    } catch (err) {
+      console.error("Setup Admin Error:", err)
+      setSetupError(err instanceof Error ? err.message : 'Failed to update')
+    } finally {
+      setSetupLoading(false)
+    }
+  }
   const { uploadProgress, setUploadProgress, retryFailedUpload } = useUpload()
   const [uploadProgressCollapsed, setUploadProgressCollapsed] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -362,10 +361,12 @@ export function DriveLayout() {
   }
 
   useEffect(() => {
-    apiFetch<{ user: AuthUser }>('/auth/me')
+    apiFetch<AuthUser>('/auth/me')
       .then((data) => {
-        setUser(data.user)
-        updateStoredUser(data.user)
+        // Fallback in case of wrong structure, though Go backend returns AuthUser directly
+        const userObj = ('user' in data ? (data as any).user : data) as AuthUser
+        setUser(userObj)
+        updateStoredUser(userObj)
       })
       .catch(() => undefined)
     loadSidebarStats().catch(() => undefined)
@@ -384,6 +385,32 @@ export function DriveLayout() {
 
   return (
     <main className="min-h-screen w-full overflow-x-hidden bg-white">
+      {isDefaultAdmin && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 className="mb-2 text-xl font-bold text-slate-900">Setup Admin Account</h2>
+            <p className="mb-6 text-sm text-slate-500">Please change the default admin credentials before continuing.</p>
+            {setupError && <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">{setupError}</div>}
+            <form onSubmit={handleSetupAdmin} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Name</label>
+                <Input value={setupName} onChange={e => setSetupName(e.target.value)} required />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
+                <Input type="email" value={setupEmail} onChange={e => setSetupEmail(e.target.value)} required />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">New Password</label>
+                <Input type="password" value={setupPassword} onChange={e => setSetupPassword(e.target.value)} required />
+              </div>
+              <Button type="submit" className="w-full" disabled={setupLoading}>
+                {setupLoading ? 'Saving...' : 'Save & Continue'}
+              </Button>
+            </form>
+          </div>
+        </div>
+      )}
       <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
         <div className="hidden lg:block lg:h-screen lg:shrink-0">
           <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} />

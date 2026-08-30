@@ -7,14 +7,19 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func registerAndLogin(t *testing.T, app *App, email string) (string, authUser) {
 	t.Helper()
+	hash, _ := bcrypt.GenerateFromPassword([]byte("password-123"), 10)
+	user := authUser{ID: randomID(), Name: "OAuth Test", Email: email}
+	app.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, user.ID, user.Name, user.Email, hash)
+
 	w := httptest.NewRecorder()
-	app.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBufferString(`{"name":"OAuth Test","email":"`+email+`","password":"password-123"}`)))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("register = %d: %s", w.Code, w.Body.String())
+	app.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"email":"`+email+`","password":"password-123"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("login = %d: %s", w.Code, w.Body.String())
 	}
 	var session struct {
 		AccessToken string   `json:"accessToken"`

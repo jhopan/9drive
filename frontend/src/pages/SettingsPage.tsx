@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, type FormEvent } from 'react'
-import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2 } from 'lucide-react'
+import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -283,25 +283,54 @@ export function SettingsPage() {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
+  const [googleConnectUrl, setGoogleConnectUrl] = useState('')
+  const [showGoogleConnectModal, setShowGoogleConnectModal] = useState(false)
+  const [googleCallbackUrl, setGoogleCallbackUrl] = useState('')
+  const [googleCallbackLoading, setGoogleCallbackLoading] = useState(false)
+
   async function connectDrive() {
     setConnecting(true)
     setMessage('')
-    const popup = window.open('', 'google-drive-connect', 'width=540,height=720')
-    if (popup) {
-      popup.document.write('<html><head><title>Connecting...</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f8fafc;color:#64748b;}</style></head><body><div style="text-align:center;"><h2>Connecting to Google...</h2><p>Please wait while we redirect you.</p></div></body></html>')
-    }
+    setGoogleCallbackUrl('')
     try {
       const data = await apiFetch<{ url: string }>('/connected-accounts/google/connect-url')
-      if (popup) {
-        popup.location.href = data.url
-      } else {
-        window.location.href = data.url
-      }
+      setGoogleConnectUrl(data.url)
+      setShowGoogleConnectModal(true)
     } catch (error) {
-      if (popup) popup.close()
-      setMessage(error instanceof Error ? error.message : 'Failed to start Google Drive connection')
+      setMessage(error instanceof Error ? error.message : 'Failed to generate Google Drive connection link')
     } finally {
       setConnecting(false)
+    }
+  }
+
+  async function handleManualCallback() {
+    if (!googleCallbackUrl) return
+    setGoogleCallbackLoading(true)
+    try {
+      // Extract search params
+      let searchParams: URLSearchParams
+      try {
+        searchParams = new URL(googleCallbackUrl).searchParams
+      } catch (e) {
+        throw new Error('Invalid URL format')
+      }
+      
+      const code = searchParams.get('code')
+      const state = searchParams.get('state')
+      if (!code || !state) throw new Error('Missing code or state in the URL')
+
+      await apiFetch(`/connected-accounts/google/callback?code=${code}&state=${state}`, {
+        method: 'GET' // using API fetch allows manual callback processing without redirecting whole page
+      })
+      
+      setMessage('Google Drive connected successfully!')
+      setShowGoogleConnectModal(false)
+      load()
+      window.dispatchEvent(new Event('9drive:storage-changed'))
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to connect account')
+    } finally {
+      setGoogleCallbackLoading(false)
     }
   }
 
@@ -353,6 +382,80 @@ export function SettingsPage() {
 
   return (
     <>
+      <DummyModal
+        open={showGoogleConnectModal}
+        onClose={() => {
+          setShowGoogleConnectModal(false)
+          load()
+        }}
+        title="Connect Google Drive"
+        description="Authorize offline access manually via localhost callback"
+        className="max-w-md"
+      >
+        <div className="grid gap-6 py-2">
+          {/* STEP 1 */}
+          <div className="grid gap-2">
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Step 1: Open this URL in your browser</h3>
+            <p className="text-[12px] text-slate-500">
+              Open the link below, select your Google account, and grant access.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                readOnly
+                value={googleConnectUrl}
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 font-mono overflow-x-auto whitespace-nowrap"
+              />
+              <Button
+                variant="outline"
+                className="shrink-0"
+                onClick={() => {
+                  navigator.clipboard.writeText(googleConnectUrl)
+                  setMessage('Authorization link copied to clipboard!')
+                }}
+              >
+                <Copy className="mr-2 h-4 w-4" /> Copy
+              </Button>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="ghost" size="sm" className="text-xs text-blue-600" onClick={() => window.open(googleConnectUrl, '_blank')}>
+                Open in new tab
+              </Button>
+            </div>
+          </div>
+
+          <div className="relative flex items-center justify-center">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200 dark:border-slate-800"></div>
+            </div>
+            <div className="relative bg-white dark:bg-slate-950 px-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              THEN
+            </div>
+          </div>
+
+          {/* STEP 2 */}
+          <div className="grid gap-2">
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Step 2: Paste the callback URL here</h3>
+            <p className="text-[12px] text-slate-500">
+              After granting access, your browser will redirect to a <code>localhost</code> URL (which may show an error). Copy the <strong>full URL</strong> from your browser's address bar and paste it below.
+            </p>
+            <div className="flex gap-2 mt-1">
+              <input
+                type="text"
+                placeholder="http://localhost:4000/...callback?state=...&code=..."
+                value={googleCallbackUrl}
+                onChange={(e) => setGoogleCallbackUrl(e.target.value)}
+                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex justify-end mt-2">
+              <Button onClick={handleManualCallback} disabled={googleCallbackLoading || !googleCallbackUrl}>
+                {googleCallbackLoading ? 'Connecting...' : 'Connect'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DummyModal>
       <PageHeader title="Setting" description="Manage account and connected storage." actions={<><Button variant="outline" size="sm" onClick={() => setS3Open(true)}><Database className="h-4 w-4" />Connect S3</Button><Button size="sm" onClick={connectDrive} disabled={connecting}><Link2 className="h-4 w-4" />{connecting ? 'Connecting...' : 'Connect Drive'}</Button></>} />
       {message ? <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm text-blue-700">{message}</p> : null}
       <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_280px]">
@@ -450,39 +553,44 @@ export function SettingsPage() {
               </div>
             )}
 
-            <form onSubmit={saveGoogleConfig} className="grid gap-3.5">
-              <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                Client ID
-                <input
-                  className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                  placeholder="Enter Google Client ID"
-                  value={googleClientId}
-                  onChange={(e) => setGoogleClientId(e.target.value)}
-                  required
-                />
-              </label>
+              <form onSubmit={saveGoogleConfig} className="grid gap-3.5" autoComplete="off">
+                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
+                  Client ID
+                  <input
+                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
+                    placeholder="Enter Google Client ID"
+                    value={googleClientId}
+                    onChange={(e) => setGoogleClientId(e.target.value)}
+                    required
+                    autoComplete="new-password"
+                    name="client_id_field"
+                  />
+                </label>
 
-              <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                Client Secret {hasSecret && <span className="font-normal text-emerald-600">(Already Configured)</span>}
-                <input
-                  className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                  type="password"
-                  placeholder={hasSecret ? "••••••••••••••••••••••••" : "Enter Google Client Secret"}
-                  value={googleClientSecret}
-                  onChange={(e) => setGoogleClientSecret(e.target.value)}
-                  required={!hasSecret}
-                />
-              </label>
+                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
+                  Client Secret {hasSecret && <span className="font-normal text-emerald-600">(Already Configured)</span>}
+                  <input
+                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
+                    type="password"
+                    placeholder={hasSecret ? "••••••••••••••••••••••••" : "Enter Google Client Secret"}
+                    value={googleClientSecret}
+                    onChange={(e) => setGoogleClientSecret(e.target.value)}
+                    required={!hasSecret}
+                    autoComplete="new-password"
+                    name="client_secret_field"
+                  />
+                </label>
 
-              <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                Redirect URI (Optional)
-                <input
-                  className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                  placeholder={defaultRedirectUri}
-                  value={googleRedirectUri}
-                  onChange={(e) => setGoogleRedirectUri(e.target.value)}
-                />
-              </label>
+                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
+                  Redirect URI (Optional)
+                  <input
+                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
+                    placeholder={defaultRedirectUri}
+                    value={googleRedirectUri}
+                    onChange={(e) => setGoogleRedirectUri(e.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
 
               <div className="flex justify-end mt-1">
                 <Button type="submit" disabled={savingGoogleConfig} size="sm">

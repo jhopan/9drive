@@ -420,44 +420,34 @@ export function AllFilesPage() {
     }
   }
 
-  async function downloadFile() {
-    if (!activeFile?.id) return
-    const response = await fetch(`${API_URL}/files/${activeFile.id}/download`, { headers: { Authorization: `Bearer ${getAccessToken()}` } })
-    if (!response.ok) throw new Error('Download failed')
-    const blob = await response.blob()
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = activeFile.name
-    link.click()
-    URL.revokeObjectURL(url)
+    async function downloadFile() {
+    const fileId = activeFile?.id ?? contextMenu.file?.id
+    if (!fileId) return
+    const token = getAccessToken()
+    window.location.href = API_URL + '/files/' + fileId + '/download?token=' + token
     setContextMenu({ x: 0, y: 0, file: null })
   }
 
-  async function downloadBatchAsZip() {
+    async function downloadBatchAsZip() {
     const selectedIds = [...selectedFileIds]
     if (selectedIds.length === 0) return
     setLoading(true)
     setMessage('')
     try {
-      const response = await fetch(`${API_URL}/files/batch-download`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getAccessToken()}`
-        },
-        body: JSON.stringify({ fileIds: selectedIds })
-      })
-      if (!response.ok) throw new Error('Failed to download ZIP file')
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = '9drive-download.zip'
-      link.click()
-      URL.revokeObjectURL(url)
+      const token = getAccessToken()
+      const form = document.createElement('form')
+      form.method = 'POST'
+      form.action = API_URL + '/files/batch-download?token=' + token
+      const input = document.createElement('input')
+      input.type = 'hidden'
+      input.name = 'fileIds'
+      input.value = JSON.stringify(selectedIds)
+      form.appendChild(input)
+      document.body.appendChild(form)
+      form.submit()
+      form.remove()
       clearSelection()
-      setMessage('Batch download complete.')
+      setMessage('Download started.')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Batch download failed')
     } finally {
@@ -846,3 +836,5 @@ export function AllFilesPage() {
     </>
   )
 }
+
+
