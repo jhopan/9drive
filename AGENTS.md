@@ -1,285 +1,503 @@
-# AGENTS.md
+# Agent Instructions for 9Drive Development
+
+## Critical Rules
+
+### 🔴 Database Safety (MANDATORY)
+
+**NEVER delete production database for testing!**
+
+```bash
+# ❌ ABSOLUTELY FORBIDDEN - destroys all user data
+rm -f data/9drive.db*
+rm -rf backend-go/data/
+
+# ✅ CORRECT - run unit tests (use :memory: DB)
+cd backend-go && go test ./...
+
+# ✅ CORRECT - backup before risky operations
+cd backend-go && ./backup.sh
+```
+
+**Why this matters:**
+- `data/9drive.db` contains ALL user data
+- User login credentials (bcrypt hashed)
+- Connected Google Drive accounts
+- OAuth tokens (AES-GCM encrypted)
+- File metadata and folder structure
+- Upload sessions
+
+**Losing this file = user loses everything permanently!**
+
+### Testing Backend Changes
+
+**Safe workflow:**
+1. Read existing code first
+2. Run unit tests: `cd backend-go && go test ./...`
+3. Start backend: `go run .` (uses production DB safely)
+4. Test with API calls or browser
+5. NEVER drop/recreate production DB
+
+**Unit tests use in-memory SQLite (`:memory:`)** — safe to run anytime.
 
 ## Project Overview
 
-9Drive is a Google Drive storage gateway. It lets users register/login with email/password or Google, automatically connect the first Drive account during Google sign-in, connect additional Google Drive accounts, track combined quota, upload files through the backend into a dedicated Google Drive `9drive` folder, organize files in virtual folders, preview/download/share files, sync MySQL file records from Google Drive, invite other users to files/folders, and route uploads to a connected Drive account with enough free space.
+**9Drive** — Multi-account cloud drive gateway with Google Drive integration.
 
-## Repository Structure
+**Tech stack:**
+- Backend: Go 1.23+ (stdlib + modernc.org/sqlite)
+- Frontend: React + Vite + TypeScript
+- Database: SQLite with WAL mode
+- Auth: JWT sessions + bcrypt passwords
+- OAuth: Google Drive API with multiple project support
 
-- `backend/`: Express API, TypeScript, Prisma schema/migrations, MySQL access, auth, Google OAuth/Drive integration.
-- `frontend/`: Vite React app, protected dashboard UI, file/folder management, sharing, uploads, quota/settings pages.
-- `docker-compose.yml`: MySQL, backend, and nginx-served frontend services.
-- `.env.docker.example`: Docker environment template.
-- `README.md`: local setup, Google Cloud setup, Docker notes, deployment notes.
+**Key features:**
+- Multiple Google Drive accounts per user
+- Multiple OAuth configs (rate limit avoidance)
+- Smart quota tracking (8k/100s auto-switch)
+- Resumable uploads (Google Drive API)
+- File metadata sync
+- Download routing
 
-## Requirements
+## Project Structure
 
-- Node.js 20+
-- npm
-- MySQL 8+
-- Google Cloud project with Google Drive API enabled
-- Google OAuth client ID and secret
+```
+9drive/
+├── backend-go/              # Go backend (port 4000)
+│   ├── main.go             # Core server + all routes + handlers
+│   ├── *_test.go           # Unit tests (use :memory: DB)
+│   ├── data/               # SQLite database directory
+│   │   └── 9drive.db       # 🔴 PRODUCTION DATABASE - NEVER DELETE
+│   ├── backups/            # Auto backups (gitignored)
+│   ├── backup.sh           # Backup script (keeps last 7)
+│   ├── DEVELOPMENT.md      # Backend dev guidelines
+│   └── .env.example        # OAuth config template
+│
+├── frontend/               # React frontend (port 5173)
+│   ├── src/
+│   │   ├── pages/         # Route pages
+│   │   ├── components/    # UI components
+│   │   │   └── drive/
+│   │   │       └── OAuthConfigManager.tsx  # OAuth config UI
+│   │   ├── context/       # React context
+│   │   └── lib/           # API client
+│   └── vite.config.ts
+│
+├── .gitignore             # Excludes *.db, .env, backups/
+└── README.md              # User-facing documentation
+```
 
-## Backend
+## Development Workflow
 
-Stack:
-- Express 5
-- TypeScript
-- Prisma 6
-- MySQL
-- Zod
-- JWT bearer auth
-- Argon2 password hashing
-- Busboy streaming uploads
-- Google APIs client
-- Undici for Google file streaming
+### Backend Changes
 
-Important files:
-- `backend/src/server.ts`: server entrypoint.
-- `backend/src/app.ts`: Express app and route mounting.
-- `backend/src/config/env.ts`: environment validation.
-- `backend/src/config/prisma.ts`: Prisma client.
-- `backend/prisma/schema.prisma`: database schema.
-- `backend/src/middleware/auth.middleware.ts`: bearer auth.
-- `backend/src/middleware/error.middleware.ts`: JSON error responses.
-- `backend/src/modules/**`: feature route modules and provider services.
-- `backend/src/modules/files/stream-google-file.ts`: Google file preview/download streaming.
-- `backend/src/scripts/seed-google-config.ts`: stores encrypted global Google OAuth config.
+1. **Read code first** — understand current implementation
+2. **Check existing tests** — see what's covered
+3. **Write/update tests** — add test cases for new features
+4. **Run tests** — `cd backend-go && go test ./...`
+5. **Test manually** — start backend, test with browser/curl
+6. **Commit** — only after verification passes
 
-Commands:
-- `cd backend && npm run dev`: start development server.
-- `cd backend && npm run build`: typecheck/build backend.
-- `cd backend && npm run start`: run compiled backend from `dist/server.js`.
-- `cd backend && npm run prisma:migrate`: run Prisma dev migration.
-- `cd backend && npm run prisma:generate`: regenerate Prisma client.
-- `cd backend && npm run seed:google-config`: store encrypted Google OAuth config.
+### Frontend Changes
 
-Environment:
-- `DATABASE_URL`
-- `APP_PORT`
-- `FRONTEND_URL`
-- `JWT_ACCESS_SECRET`
-- `TOKEN_ENCRYPTION_KEY`
-- `RECAPTCHA_SECRET_KEY` (optional; enables captcha verification when paired with frontend site key)
-- `ACCESS_TOKEN_TTL_SECONDS`
-- `REFRESH_TOKEN_TTL_DAYS`
-- `MAX_UPLOAD_BYTES`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REDIRECT_URI`
+1. **Start dev server** — `cd frontend && npm run dev`
+2. **Test in browser** — `http://localhost:5173`
+3. **Check console** — no errors
+4. **Verify API calls** — Network tab in DevTools
+5. **Test responsive** — mobile/tablet/desktop
+6. **Commit** — after visual verification
 
-Backend conventions:
-- Put route logic under `backend/src/modules/<feature>/<feature>.routes.ts`.
-- Mount new routers in `backend/src/app.ts`.
-- Use `requireAuth` for authenticated routes.
-- Use `AuthRequest` when accessing `req.user`.
-- Validate request bodies/query params with Zod.
-- Use Prisma from `backend/src/config/prisma.ts`.
-- Return JSON errors with stable `code` and human-readable `message`.
-- Pass unexpected errors to `next(error)`.
-- Convert `bigint` values to strings before sending JSON responses.
-- Keep Google-specific OAuth/Drive behavior in provider modules/services when possible.
-- Keep public-token routes outside `requireAuth`; verify token hash, status, and expiry before streaming/returning data.
-- Google sign-in/register uses one-time auth handoff tokens; never send app access/refresh tokens through URL query params.
-- Email/password registration verifies reCAPTCHA only when `RECAPTCHA_SECRET_KEY` is configured.
+### Database Schema Changes
 
-Security rules:
-- Never commit `.env` files or secrets.
-- Never log access tokens, refresh tokens, OAuth client secrets, JWT secrets, encryption keys, or raw public share tokens.
-- Google tokens are encrypted before database storage.
-- App refresh tokens are hashed before database storage.
-- Auth handoff, share, and preview tokens are stored as hashes where applicable.
-- Uploaded files must stream through backend to Google Drive folder `9drive`; do not store uploaded files on disk.
-- Keep CORS restricted by `FRONTEND_URL`.
-- Keep auth/token storage behavior centralized; do not change without explicit reason.
+**Add migration in `main.go` init:**
+```go
+_, _ = db.Exec(`
+  CREATE TABLE IF NOT EXISTS new_table (
+    id TEXT PRIMARY KEY,
+    ...
+  )
+`)
+```
 
-Database rules:
-- Change DB schema through Prisma schema and migrations.
-- Do not hand-edit generated Prisma client files.
-- After schema changes, run Prisma migration/generation and backend build.
-- Add indexes for new common filters before relying on them in hot paths.
+**Rules:**
+- Migrations run once per database
+- Always use `IF NOT EXISTS` or `IF NOT EXISTS COLUMN`
+- Test migration on DB copy first
+- Never drop tables in migration
+- Add new columns with defaults
 
-## Frontend
+## Testing
 
-Stack:
-- React 19
-- Vite 8
-- TypeScript
-- React Router 7
-- Tailwind CSS 4
-- lucide-react
-- class-variance-authority
-- clsx
-- tailwind-merge
+### Unit Tests
 
-Important files:
-- `frontend/src/main.tsx`: React entrypoint.
-- `frontend/src/App.tsx`: route registration.
-- `frontend/src/layouts/DriveLayout.tsx`: protected app shell, sidebar, header search, storage sidebar stats.
-- `frontend/src/pages/AllFilesPage.tsx`: core file/folder UI, uploads, context menus, preview, share/invite modals.
-- `frontend/src/pages/SharedPage.tsx`: shared links and invites UI.
-- `frontend/src/pages/QuotaTrackerPage.tsx`: connected-account quota UI.
-- `frontend/src/pages/SettingsPage.tsx`: Google account/settings UI.
-- `frontend/src/pages/GoogleAuthPage.tsx`: Google auth handoff exchange page.
-- `frontend/src/pages/PublicFilePage.tsx`: public shared file viewer/embed page.
-- `frontend/src/components/auth/GoogleLogo.tsx`: Google button logo.
-- `frontend/src/components/drive/**`: drive-specific UI components.
-- `frontend/src/components/ui/**`: reusable UI primitives.
-- `frontend/src/lib/api.ts`: API helper, token refresh retry, formatting utilities.
-- `frontend/src/lib/auth.ts`: local auth session storage.
-- `frontend/src/lib/plyr.ts`: video preview player loading.
-- `frontend/src/style.css`: Tailwind import and global styles.
+```bash
+cd backend-go
+go test ./...                    # Run all tests
+go test -v                       # Verbose output
+go test -run TestSpecificFunc    # Run specific test
+```
 
-Commands:
-- `cd frontend && npm run dev`: start Vite dev server.
-- `cd frontend && npm run build`: typecheck/build frontend.
-- `cd frontend && npm run preview`: preview production build.
+**Tests use in-memory DB** — safe to run anytime, won't touch production.
 
-Environment:
-- `VITE_API_URL`: backend base URL. Vite embeds this at build time.
-- `VITE_RECAPTCHA_SITE_KEY`: optional reCAPTCHA site key. Vite embeds this at build time; blank disables captcha UI.
+### Manual Testing
 
-Frontend conventions:
-- Use `@/*` imports for files under `frontend/src`.
-- Keep route registration in `frontend/src/App.tsx`.
-- Use `apiFetch` for normal JSON API calls.
-- Use raw `fetch` or `XMLHttpRequest` only when response streaming/blob/progress requires it.
-- Keep access/refresh token handling centralized in `frontend/src/lib/api.ts` and `frontend/src/lib/auth.ts`.
-- Use existing `Button`, `Card`, and `Input` primitives before adding new UI primitives.
-- Use `cn` from `frontend/src/lib/utils.ts` for conditional class names.
-- Preserve current Tailwind visual style unless task explicitly asks redesign.
-- Keep protected dashboard pages inside `ProtectedRoute` and `DriveLayout`.
-- Keep file/folder URL state in query params when it affects navigation, e.g. `folderId` and file search `q`.
+```bash
+# Start backend (port 4000)
+cd backend-go
+go run .
 
-## API Notes
+# Start frontend (port 5173)
+cd frontend
+npm run dev
 
-General:
-- `GET /health`
-- Authenticated routes expect `Authorization: Bearer <accessToken>` unless listed as public.
+# Browser: http://localhost:5173
+# Login: jhopanstore@gmail.com / jhopanstore
+```
 
-Auth:
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /auth/google/url`
-- `GET /auth/google/callback`
-- `POST /auth/google/exchange`
-- `POST /auth/refresh`
-- `POST /auth/logout`
-- `GET /auth/me`
+### API Testing
 
-Provider configs:
-- `POST /provider-configs/google`
-- `GET /provider-configs`
-- `DELETE /provider-configs/:id`
+```bash
+# Health check
+curl http://localhost:4000/health
 
-Google connected accounts:
-- `GET /connected-accounts/google/connect-url`
-- `GET /connected-accounts/google/connect`
-- `GET /connected-accounts/google/callback`
-- `GET /connected-accounts`
-- `POST /connected-accounts/:id/sync-quota`
-- `DELETE /connected-accounts/:id`
+# Login
+curl -X POST http://localhost:4000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"jhopanstore@gmail.com","password":"jhopanstore"}'
 
-Storage:
-- `GET /storage/summary`
-- `GET /storage/breakdown`
+# Get OAuth configs (requires token)
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:4000/system/google-config
+```
 
-Folders:
-- `GET /folders?parentId=<id>`
-- `GET /folders?all=1`
-- `GET /folders/recent?limit=4`
-- `POST /folders`
-- `PATCH /folders/:id`
-- `DELETE /folders/:id`
+## Git Workflow
 
-Files:
-- `GET /files`
-- `GET /files?folderId=<id>`
-- `GET /files?q=<search>`
-- `GET /files/shared-links`
-- `GET /files/:id`
-- `PATCH /files/:id`
-- `PATCH /files/batch`
-- `DELETE /files/batch`
-- `POST /files/sync-google`
-- `POST /files/:id/share`
-- `DELETE /files/:id/share`
-- `POST /files/:id/preview-token`
-- `GET /files/:id/view-url`
-- `GET /files/:id/download`
-- `DELETE /files/:id`
-- `GET /files/preview/:token`
+```bash
+# Check status
+git status
 
-Invites:
-- `GET /invites`
-- `POST /invites`
-- `DELETE /invites/:id`
+# Stage changes
+git add -A
 
-Public shared files:
-- `GET /public/files/:token`
-- `GET /public/files/:token/download`
-- `GET /public/files/:token/preview`
+# Commit with clear message
+git commit -m "feat: add OAuth quota tracking"
+git commit -m "fix: prevent delete last active config"
+git commit -m "docs: update README with deployment steps"
 
-Uploads:
-- `POST /uploads`
-- Content type: `multipart/form-data`.
-- Current frontend sends metadata first as `filesMeta`: JSON array of `{ fieldName, fileName, mimeType, sizeBytes, folderId? }`.
-- File fields then match `filesMeta[*].fieldName`, e.g. `file-0`, `file-1`.
-- Backend selects a connected Drive account with enough available quota and streams each file directly to Google Drive.
-- Google Drive uploads are placed under the root Drive folder named `9drive`; virtual folders remain app/database-only.
-- `POST /files/sync-google` treats Google Drive folder `9drive` as source of truth for physical files: create missing MySQL file rows, update changed metadata, and mark missing Drive files as deleted.
+# Push to main
+git push origin main
+```
 
-## Docker
+**Commit message prefixes:**
+- `feat:` — new feature
+- `fix:` — bug fix
+- `docs:` — documentation only
+- `refactor:` — code restructuring
+- `test:` — add/update tests
+- `chore:` — build/config changes
 
-Commands:
-- `docker compose up -d --build`: build and start MySQL, backend, frontend.
-- `docker compose exec backend npm run seed:google-config`: seed Google config inside backend container.
-- `docker compose logs -f backend`: backend logs.
-- `docker compose logs -f frontend`: frontend logs.
-- `docker compose logs -f mysql`: MySQL logs.
-- `docker compose down`: stop services.
-- `docker compose down -v`: stop services and remove DB volume.
+## Environment Setup
 
-Docker notes:
-- MySQL image is `mysql:8.4`.
-- Backend listens on `4000`.
-- Frontend build is served by nginx on host port `5173`.
-- Frontend build arg `VITE_API_URL` is embedded at build time.
-- Rebuild frontend when `VITE_API_URL` changes.
+### Backend Configuration
 
-## Verification
+Create `backend-go/.env`:
 
-Before finishing backend changes:
-- `cd backend && npm run build`
+```bash
+# JWT & Encryption (change in production)
+JWT_SECRET=your-secret-key-here
+TOKEN_ENCRYPTION_KEY=12345678901234567890123456789012  # Must be exactly 32 bytes
 
-Before finishing frontend changes:
-- `cd frontend && npm run build`
+# Primary Google OAuth Config (auto-bootstrapped)
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:4000/connected-accounts/google/callback
 
-Before finishing schema changes:
-- `cd backend && npm run prisma:migrate`
-- `cd backend && npm run build`
+# Additional OAuth Configs (optional, for rate limit avoidance)
+GOOGLE_CLIENT_ID_2=another-project-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET_2=another-secret
+GOOGLE_REDIRECT_URI_2=http://localhost:4000/connected-accounts/google/callback
 
-Manual smoke test:
-- Register/login.
-- Open Settings.
-- Connect Google Drive.
-- Verify connected account appears.
-- Open Quota Tracker and sync quota.
-- Create nested folders in All Files.
-- Use header search for an uploaded file name.
-- Upload one or more files and verify progress panel.
-- Switch file list/grid view.
-- Right-click file and test preview/download/rename/move/share/invite/delete where relevant.
-- Open Shared page and verify shared links/invites.
-- Open public file link and test preview/download.
+# Up to GOOGLE_CLIENT_ID_10 supported
+```
 
-## Agent Rules
+**OAuth config bootstrap:**
+- Backend reads env vars at startup
+- Auto-creates `provider_configs` rows if missing
+- Label: "Primary", "Project 2", "Project 3", etc.
+- All configs start with `status='active'`
 
-- Prefer small, targeted changes.
-- Preserve existing architecture and naming.
-- Do not introduce new dependencies unless necessary.
-- Do not commit secrets.
-- Do not edit `node_modules`, build output, or generated Prisma client.
-- Do not change auth/token storage behavior without explicit reason.
-- Do not change Google OAuth scopes or redirect behavior without checking README and env requirements.
-- Do not change upload behavior to write files to disk.
+### Google Cloud Console Setup
+
+1. Go to https://console.cloud.google.com
+2. Create project (or use existing)
+3. Enable **Google Drive API**
+4. Create OAuth 2.0 credentials (Web application)
+5. Add authorized redirect URI: `http://localhost:4000/connected-accounts/google/callback`
+6. Copy Client ID and Client Secret to `.env`
+
+## Current User Setup
+
+**Database:** `C:\Users\ACER\Documents\project\9drive\backend-go\data\9drive.db`
+
+**Login credentials:**
+- Email: `jhopanstore@gmail.com`
+- Password: `jhopanstore` (bcrypt hashed in DB)
+
+**OAuth configs:**
+- Primary config bootstrapped from env
+- Label: "Primary"
+- Status: active
+- Quota tracking enabled (8k/100s threshold)
+
+## Common Tasks
+
+### View Database Contents
+
+```bash
+cd backend-go
+
+# List all users
+sqlite3 data/9drive.db "SELECT id, name, email FROM users"
+
+# List connected accounts
+sqlite3 data/9drive.db "SELECT id, provider, email FROM connected_accounts"
+
+# List OAuth configs
+sqlite3 data/9drive.db "SELECT id, label, status FROM provider_configs"
+
+# Count files
+sqlite3 data/9drive.db "SELECT COUNT(*) FROM files"
+```
+
+### Create Database Backup
+
+```bash
+cd backend-go
+./backup.sh
+
+# Output: backups/9drive_YYYYMMDD_HHMMSS.db
+# Keeps last 7 backups, auto-deletes older
+```
+
+### Restore From Backup
+
+```bash
+cd backend-go
+
+# List available backups
+ls -la backups/
+
+# Restore (example timestamp)
+cp backups/9drive_20260830_123456.db data/9drive.db
+
+# Restart backend to use restored DB
+```
+
+### Add New OAuth Config
+
+**Option 1: Via environment (recommended)**
+
+1. Add to `backend-go/.env`:
+   ```
+   GOOGLE_CLIENT_ID_2=new-project.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET_2=new-secret
+   ```
+2. Restart backend (auto-bootstraps)
+
+**Option 2: Via API**
+
+```bash
+curl -X POST http://localhost:4000/system/google-config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clientId": "new-project.apps.googleusercontent.com",
+    "clientSecret": "new-secret",
+    "redirectUri": "http://localhost:4000/connected-accounts/google/callback",
+    "label": "Project 3"
+  }'
+```
+
+### Update User Credentials
+
+```bash
+# Via API (requires login first)
+curl -X PUT http://localhost:4000/auth/me \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "New Name",
+    "email": "newemail@gmail.com",
+    "password": "newpassword"
+  }'
+```
+
+## Troubleshooting
+
+### "Login failed" with correct credentials
+
+**Check if user exists:**
+```bash
+sqlite3 backend-go/data/9drive.db "SELECT * FROM users"
+```
+
+**If empty:** Database was reset. Admin bootstrap creates `admin@gmail.com` / `admin` on first run.
+
+### "Connected accounts empty" after restart
+
+**Check database file exists:**
+```bash
+ls -la backend-go/data/9drive.db
+```
+
+**If missing:** Database was deleted. Restore from backup or user must reconnect accounts.
+
+### OAuth redirect fails
+
+**Check redirect URI matches exactly:**
+- Google Console: `http://localhost:4000/connected-accounts/google/callback`
+- `.env` file: `GOOGLE_REDIRECT_URI=http://localhost:4000/connected-accounts/google/callback`
+- Must match exactly (http vs https, trailing slash)
+
+### Quota tracking not working
+
+**Check provider_config_quota table:**
+```bash
+sqlite3 backend-go/data/9drive.db \
+  "SELECT * FROM provider_config_quota"
+```
+
+**Should show:**
+- `request_count` incrementing per OAuth request
+- `window_start` timestamp within last 100 seconds
+- Auto-resets after 100 seconds
+
+### Frontend can't connect to backend
+
+**Check backend is running:**
+```bash
+curl http://localhost:4000/health
+# Should return: {"status":"ok"}
+```
+
+**Check frontend API_URL:**
+```typescript
+// frontend/src/lib/api.ts
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000'
+```
+
+## Security Notes
+
+### Credentials Storage
+
+- **Passwords:** bcrypt hashed (cost 10) in `users.password_hash`
+- **OAuth tokens:** AES-GCM encrypted in `connected_accounts.encrypted_token`
+- **JWT secrets:** Environment variables only (never commit)
+- **Encryption key:** Must be exactly 32 bytes for AES-256
+
+### Never Commit
+
+```gitignore
+*.db                # Database files
+*.db-wal            # SQLite WAL files
+*.db-shm            # SQLite shared memory
+.env                # Environment secrets
+backups/            # Database backups
+```
+
+**Already in `.gitignore`** — double-check before committing.
+
+## Rate Limit Strategy
+
+### Google Drive API Limits
+
+- **Per project:** 10,000 requests / 100 seconds
+- **Threshold:** 8,000 requests (80% of limit)
+- **Auto-switch:** When config hits 8k, use next config
+
+### Multiple OAuth Configs
+
+**Why:**
+- Single project = 10k req/100s limit
+- 5 projects = 50k req/100s total capacity
+
+**How it works:**
+1. User connects Google Drive account
+2. Backend picks least-used OAuth config
+3. Tracks `request_count` per config per 100s window
+4. Auto-switches to next config at 8k threshold
+5. Window resets after 100 seconds
+
+**Frontend UI:**
+- Settings → "Google OAuth Configs" section
+- Visual quota bars (orange > 80%)
+- Add/delete/toggle configs
+- Auto-refresh every 10 seconds
+
+## Common Mistakes to Avoid
+
+❌ **Deleting production database for testing**
+   - Use `go test ./...` instead (memory DB)
+
+❌ **Committing `.env` or `*.db` files**
+   - Check `.gitignore` includes them
+
+❌ **Hardcoding secrets in code**
+   - Always use environment variables
+
+❌ **Forgetting to backup before schema changes**
+   - Run `./backup.sh` first
+
+❌ **Testing OAuth with wrong redirect URI**
+   - Must match Google Console exactly
+
+❌ **Assuming data persists without DB file**
+   - SQLite = file on disk, losing file = losing data
+
+## Best Practices
+
+✅ **Read before write** — understand existing code first
+✅ **Test before commit** — `go test ./...` must pass
+✅ **Backup before changes** — especially schema migrations
+✅ **Use stdlib first** — avoid dependencies when possible
+✅ **Shortest diff wins** — minimal changes preferred
+✅ **Comments for pitfalls** — explain non-obvious decisions
+✅ **Update tests** — when changing behavior
+
+## Quick Reference
+
+```bash
+# Backend
+cd backend-go
+go test ./...                    # Run tests
+go run .                         # Start server (port 4000)
+./backup.sh                      # Create backup
+
+# Frontend  
+cd frontend
+npm run dev                      # Start dev server (port 5173)
+npm run build                    # Production build
+
+# Database
+sqlite3 data/9drive.db           # Open DB shell
+.tables                          # List tables
+SELECT * FROM users;             # Query users
+.quit                            # Exit
+
+# Git
+git add -A                       # Stage all
+git commit -m "feat: X"          # Commit
+git push origin main             # Push
+```
+
+## Remember
+
+🔴 **NEVER delete `data/9drive.db` for testing**
+✅ **Always backup before risky operations**
+✅ **Test with `go test ./...` (uses :memory: DB)**
+✅ **User data is sacred — losing DB = losing everything**
+
+---
+
+**Repository:** https://github.com/jhopan/9drive
+**Owner:** Jhopan (jhopanstore@gmail.com)
+**Current date:** 2026-08-30
