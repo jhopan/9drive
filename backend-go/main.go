@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, provider TEXT NOT NULL,
   client_id_encrypted TEXT NOT NULL, client_secret_encrypted TEXT NOT NULL,
   redirect_uri TEXT NOT NULL, scopes TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active',
+  label TEXT, last_used_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -180,19 +181,42 @@ func (a *App) bootstrapGoogleConfig() error {
 	if err := a.DB.QueryRow(`SELECT id FROM users WHERE email='admin@gmail.com'`).Scan(&adminID); err != nil {
 		return nil
 	}
+	
+	// Bootstrap primary config
 	var exists int
-	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE provider='google_drive'`).Scan(&exists)
-	if exists > 0 {
-		return nil
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE provider='google_drive' AND user_id=?`, adminID).Scan(&exists)
+	if exists == 0 {
+		redirectURI := a.Config.GoogleRedirectURI
+		if redirectURI == "" {
+			redirectURI = "http://localhost:4000/connected-accounts/google/callback"
+		}
+		_, _ = a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes,label) VALUES (?,?,?,?,?,?,?,?)`,
+			randomID(), adminID, "google_drive", a.encrypt(a.Config.GoogleClientID), a.encrypt(a.Config.GoogleClientSecret), redirectURI,
+			`["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/userinfo.email"]`, "Primary")
 	}
-	redirectURI := a.Config.GoogleRedirectURI
-	if redirectURI == "" {
-		redirectURI = "http://localhost:4000/connected-accounts/google/callback"
+	
+	// Bootstrap additional configs from GOOGLE_CLIENT_ID_2, GOOGLE_CLIENT_SECRET_2, etc.
+	for i := 2; i <= 10; i++ {
+		clientID := os.Getenv(fmt.Sprintf("GOOGLE_CLIENT_ID_%d", i))
+		clientSecret := os.Getenv(fmt.Sprintf("GOOGLE_CLIENT_SECRET_%d", i))
+		if clientID == "" || clientSecret == "" {
+			continue
+		}
+		var configExists int
+		encryptedID := a.encrypt(clientID)
+		_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE client_id_encrypted=?`, encryptedID).Scan(&configExists)
+		if configExists > 0 {
+			continue
+		}
+		redirectURI := os.Getenv(fmt.Sprintf("GOOGLE_REDIRECT_URI_%d", i))
+		if redirectURI == "" {
+			redirectURI = "http://localhost:4000/connected-accounts/google/callback"
+		}
+		_, _ = a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes,label) VALUES (?,?,?,?,?,?,?,?)`,
+			randomID(), adminID, "google_drive", encryptedID, a.encrypt(clientSecret), redirectURI,
+			`["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/userinfo.email"]`, fmt.Sprintf("Project %d", i))
 	}
-	_, err := a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes) VALUES (?,?,?,?,?,?,?)`,
-		randomID(), adminID, "google_drive", a.encrypt(a.Config.GoogleClientID), a.encrypt(a.Config.GoogleClientSecret), redirectURI,
-		`["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/userinfo.email"]`)
-	return err
+	return nil
 }
 
 func (a *App) Router() http.Handler {
@@ -369,11 +393,14 @@ func (a *App) systemUpdate(w http.ResponseWriter, r *http.Request) {
 func (a *App) googleConnectURL(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	var id, encryptedID, redirectURI, scopes string
-	err := a.DB.QueryRow(`SELECT id,client_id_encrypted,redirect_uri,scopes FROM provider_configs WHERE user_id=? AND provider='google_drive' AND status='active' ORDER BY created_at DESC LIMIT 1`, user.ID).Scan(&id, &encryptedID, &redirectURI, &scopes)
+	// Pick config with least recent usage (round-robin load balancing across Google Cloud projects)
+	err := a.DB.QueryRow(`SELECT id,client_id_encrypted,redirect_uri,scopes FROM provider_configs WHERE user_id=? AND provider='google_drive' AND status='active' ORDER BY last_used_at IS NULL DESC, last_used_at ASC LIMIT 1`, user.ID).Scan(&id, &encryptedID, &redirectURI, &scopes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "GOOGLE_NOT_CONFIGURED", "Configure Google OAuth first.")
 		return
 	}
+	// Update last_used_at to current time
+	_, _ = a.DB.Exec(`UPDATE provider_configs SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	clientID, err := a.decrypt(encryptedID)
 	if err != nil {
 		writeError(w, 500, "GOOGLE_CONFIG_FAILED", "Unable to read Google config.")
