@@ -39,6 +39,31 @@ cd backend-go && ./backup.sh
 
 **Unit tests use in-memory SQLite (`:memory:`)** — safe to run anytime.
 
+### 📤 Git Push Policy (MANDATORY)
+
+**ALWAYS push changes to GitHub after committing!**
+
+Every commit MUST be followed by push to origin/main.
+
+```bash
+# ✅ CORRECT workflow
+git add -A
+git commit -m "feat: add feature X"
+git push origin main              # REQUIRED - never skip
+
+# ❌ WRONG - commit without push
+git commit -m "fix: bug Y"
+# ... then forget to push = changes not backed up
+```
+
+**Why this matters:**
+- User expects changes in GitHub repository
+- Local commits without push = work not backed up
+- Other developers/devices cannot see changes
+- CI/CD pipelines will not trigger
+
+**Rule:** Every `git commit` MUST be immediately followed by `git push origin main`.
+
 ## Project Overview
 
 **9Drive** — Multi-account cloud drive gateway with Google Drive integration.
