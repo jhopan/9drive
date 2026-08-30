@@ -4,7 +4,7 @@ import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { DriveLayout } from '@/layouts/DriveLayout'
 import { LoginPage } from '@/pages/LoginPage'
 import { GoogleAuthPage } from '@/pages/GoogleAuthPage'
-import { GoogleConnectedPage } from '@/pages/GoogleConnectedPage'
+import GoogleConnectedPage from '@/pages/GoogleConnectedPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { UploadProvider } from '@/context/UploadContext'
 
