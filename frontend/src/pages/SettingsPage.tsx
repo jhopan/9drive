@@ -482,6 +482,16 @@ export function SettingsPage() {
             </div>
           </Card>
 
+          <Card className="overflow-hidden p-3.5">
+            <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2.5"><Cloud className="h-5 w-5 text-blue-600" /><h2 className="text-[16px] font-bold">Google Drive</h2></div>
+                <p className="mt-1 text-[13px] text-slate-500">Connect one or more Google Drive accounts. 9Drive will route uploads to account with enough space.</p>
+              </div>
+              <Button className="w-full sm:w-32" size="sm" onClick={connectDrive} disabled={connecting}><Link2 className="h-4 w-4" />{connecting ? 'Opening...' : 'Connect Drive'}</Button>
+            </div>
+          </Card>
+
           <OAuthConfigManager />
 
           <Card className="overflow-hidden p-3.5">
