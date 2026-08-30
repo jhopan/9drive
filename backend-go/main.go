@@ -30,11 +30,14 @@ import (
 )
 
 type Config struct {
-	DatabaseURL string
-	AppPort     string
-	FrontendURL string
-	JWTSecret   string
-	TokenKey    string
+	DatabaseURL        string
+	AppPort            string
+	FrontendURL        string
+	JWTSecret          string
+	TokenKey           string
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURI  string
 }
 
 type App struct {
@@ -66,11 +69,14 @@ func loadConfig() Config {
 		return fallback
 	}
 	return Config{
-		DatabaseURL: getenv("DATABASE_URL", "file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"),
-		AppPort:     getenv("APP_PORT", "4000"),
-		FrontendURL: getenv("FRONTEND_URL", "http://localhost:5173"),
-		JWTSecret:   getenv("JWT_ACCESS_SECRET", "change-this-jwt-secret-before-production"),
-		TokenKey:    getenv("TOKEN_ENCRYPTION_KEY", "change-this-token-key-before-production"),
+		DatabaseURL:        getenv("DATABASE_URL", "file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"),
+		AppPort:            getenv("APP_PORT", "4000"),
+		FrontendURL:        getenv("FRONTEND_URL", "http://localhost:5173"),
+		JWTSecret:          getenv("JWT_ACCESS_SECRET", "change-this-jwt-secret-before-production"),
+		TokenKey:           getenv("TOKEN_ENCRYPTION_KEY", "change-this-token-key-before-production"),
+		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURI:  os.Getenv("GOOGLE_REDIRECT_URI"),
 	}
 }
 
@@ -163,6 +169,29 @@ func (a *App) ensureInitialAdmin() error {
 	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
 	if err != nil { return err }
 	_, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash))
+	return err
+}
+
+func (a *App) bootstrapGoogleConfig() error {
+	if a.Config.GoogleClientID == "" || a.Config.GoogleClientSecret == "" {
+		return nil
+	}
+	var adminID string
+	if err := a.DB.QueryRow(`SELECT id FROM users WHERE email='admin@gmail.com'`).Scan(&adminID); err != nil {
+		return nil
+	}
+	var exists int
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE provider='google_drive'`).Scan(&exists)
+	if exists > 0 {
+		return nil
+	}
+	redirectURI := a.Config.GoogleRedirectURI
+	if redirectURI == "" {
+		redirectURI = "http://localhost:4000/connected-accounts/google/callback"
+	}
+	_, err := a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes) VALUES (?,?,?,?,?,?,?)`,
+		randomID(), adminID, "google_drive", a.encrypt(a.Config.GoogleClientID), a.encrypt(a.Config.GoogleClientSecret), redirectURI,
+		`["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/userinfo.email"]`)
 	return err
 }
 
@@ -1376,6 +1405,9 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := app.ensureInitialAdmin(); err != nil {
+		log.Fatal(err)
+	}
+	if err := app.bootstrapGoogleConfig(); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("9Drive Go listening on http://127.0.0.1:%s", config.AppPort)
