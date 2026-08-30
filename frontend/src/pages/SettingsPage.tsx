@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, type FormEvent } from 'react'
-import { Bell, Cloud, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
+import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -46,9 +46,8 @@ export function SettingsPage() {
   const [googleClientSecret, setGoogleClientSecret] = useState('')
   const [googleRedirectUri, setGoogleRedirectUri] = useState('')
   const [defaultRedirectUri, setDefaultRedirectUri] = useState('')
-  const [hasSecret, setHasSecret] = useState(false)
-  const [savingGoogleConfig, setSavingGoogleConfig] = useState(false)
-  const [showGoogleHelp, setShowGoogleHelp] = useState(false)
+  const [googleConnectUrl, setGoogleConnectUrl] = useState('')
+  const [showGoogleConnectModal, setShowGoogleConnectModal] = useState(false)
 
   // Live log polling states
   const [isPollingLog, setIsPollingLog] = useState(false)
@@ -210,28 +209,6 @@ export function SettingsPage() {
     }
   }
 
-  async function saveGoogleConfig(event: FormEvent) {
-    event.preventDefault()
-    setSavingGoogleConfig(true)
-    setMessage('')
-    try {
-      const res = await apiFetch<{ message: string }>('/system/google-config', {
-        method: 'POST',
-        body: JSON.stringify({
-          clientId: googleClientId,
-          clientSecret: googleClientSecret || undefined,
-          redirectUri: googleRedirectUri || defaultRedirectUri,
-        }),
-      })
-      setMessage(res.message || 'Google OAuth credentials saved.')
-      setHasSecret(true)
-      setGoogleClientSecret('')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to save Google OAuth configuration')
-    } finally {
-      setSavingGoogleConfig(false)
-    }
-  }
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null
 
