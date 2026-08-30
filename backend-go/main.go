@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS provider_config_quota (
+  id TEXT PRIMARY KEY, provider_config_id TEXT NOT NULL UNIQUE, 
+  request_count INTEGER NOT NULL DEFAULT 0, window_start TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(provider_config_id) REFERENCES provider_configs(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS oauth_states (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, provider_config_id TEXT NOT NULL,
   flow TEXT NOT NULL DEFAULT 'connect', state_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL,
@@ -230,6 +236,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PUT /auth/me", a.requireAuth(a.updateMe))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
+	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
+	mux.HandleFunc("PATCH /system/google-config/{id}", a.requireAuth(a.updateGoogleConfig))
 	mux.HandleFunc("POST /system/update", a.requireAuth(a.systemUpdate))
 	mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
 	mux.HandleFunc("GET /connected-accounts/google/connect-url", a.requireAuth(a.googleConnectURL))
@@ -350,10 +358,38 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) getGoogleConfig(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
-	redirect := "http://" + r.Host + "/connected-accounts/google/callback"
-	var configuredRedirect string
-	err := a.DB.QueryRow(`SELECT redirect_uri FROM provider_configs WHERE user_id=? AND provider='google_drive' AND status='active' ORDER BY created_at DESC LIMIT 1`, user.ID).Scan(&configuredRedirect)
-	writeJSON(w, http.StatusOK, map[string]any{"exists": err == nil, "clientId": "", "redirectUri": configuredRedirect, "hasSecret": err == nil, "defaultRedirectUri": redirect})
+	rows, err := a.DB.Query(`
+		SELECT p.id, p.label, p.redirect_uri, p.status, COALESCE(p.last_used_at,''), p.created_at,
+		       COALESCE(q.request_count, 0), COALESCE(q.window_start, '')
+		FROM provider_configs p 
+		LEFT JOIN provider_config_quota q ON q.provider_config_id = p.id 
+		WHERE p.user_id=? AND p.provider='google_drive' 
+		ORDER BY p.created_at ASC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "CONFIG_FAILED", "Unable to list configs.")
+		return
+	}
+	defer rows.Close()
+	configs := make([]map[string]any, 0)
+	windowStart := time.Now().UTC().Add(-100 * time.Second).Format(time.RFC3339Nano)
+	for rows.Next() {
+		var id, label, redirectURI, status, lastUsed, createdAt, quotaWindowStart string
+		var requestCount int
+		if err := rows.Scan(&id, &label, &redirectURI, &status, &lastUsed, &createdAt, &requestCount, &quotaWindowStart); err != nil {
+			continue
+		}
+		// Reset count if window expired
+		if quotaWindowStart < windowStart {
+			requestCount = 0
+		}
+		configs = append(configs, map[string]any{
+			"id": id, "label": label, "redirectUri": redirectURI, "status": status, 
+			"lastUsedAt": lastUsed, "createdAt": createdAt, 
+			"quotaUsed": requestCount, "quotaLimit": 8000,
+		})
+	}
+	defaultRedirect := "http://" + r.Host + "/connected-accounts/google/callback"
+	writeJSON(w, http.StatusOK, map[string]any{"configs": configs, "defaultRedirectUri": defaultRedirect})
 }
 
 func (a *App) saveGoogleConfig(w http.ResponseWriter, r *http.Request) {
@@ -362,6 +398,7 @@ func (a *App) saveGoogleConfig(w http.ResponseWriter, r *http.Request) {
 		ClientID     string `json:"clientId"`
 		ClientSecret string `json:"clientSecret"`
 		RedirectURI  string `json:"redirectUri"`
+		Label        string `json:"label"`
 	}
 	if err := decodeJSON(r, &body); err != nil || body.ClientID == "" || body.ClientSecret == "" {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Client ID and Client Secret are required.")
@@ -374,13 +411,77 @@ func (a *App) saveGoogleConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid redirect URI.")
 		return
 	}
-	_, _ = a.DB.Exec(`UPDATE provider_configs SET status='disabled' WHERE user_id=? AND provider='google_drive' AND status='active'`, user.ID)
-	_, err := a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes,status) VALUES (?,?,?,?,?,?,?, 'active')`, randomID(), user.ID, "google_drive", a.encrypt(body.ClientID), a.encrypt(body.ClientSecret), body.RedirectURI, `["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.email","https://www.googleapis.com/auth/userinfo.profile"]`)
+	if body.Label == "" {
+		var count int
+		_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE user_id=? AND provider='google_drive'`, user.ID).Scan(&count)
+		body.Label = fmt.Sprintf("Project %d", count+1)
+	}
+	// Check if this client_id already exists (prevent duplicates)
+	encryptedID := a.encrypt(body.ClientID)
+	var exists int
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE client_id_encrypted=? AND user_id=?`, encryptedID, user.ID).Scan(&exists)
+	if exists > 0 {
+		writeError(w, http.StatusBadRequest, "CONFIG_EXISTS", "This OAuth config already exists.")
+		return
+	}
+	_, err := a.DB.Exec(`INSERT INTO provider_configs (id,user_id,provider,client_id_encrypted,client_secret_encrypted,redirect_uri,scopes,status,label) VALUES (?,?,?,?,?,?,?,'active',?)`, randomID(), user.ID, "google_drive", encryptedID, a.encrypt(body.ClientSecret), body.RedirectURI, `["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.email","https://www.googleapis.com/auth/userinfo.profile"]`, body.Label)
 	if err != nil {
 		writeError(w, 500, "GOOGLE_CONFIG_FAILED", "Unable to save Google config.")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "Google OAuth credentials saved."})
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Google OAuth config added."})
+}
+
+func (a *App) deleteGoogleConfig(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	configID := r.PathValue("id")
+	// Check ownership
+	var ownerID string
+	err := a.DB.QueryRow(`SELECT user_id FROM provider_configs WHERE id=?`, configID).Scan(&ownerID)
+	if err != nil || ownerID != user.ID {
+		writeError(w, http.StatusNotFound, "CONFIG_NOT_FOUND", "Config not found.")
+		return
+	}
+	// Prevent deleting last config
+	var count int
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE user_id=? AND provider='google_drive' AND status='active'`, user.ID).Scan(&count)
+	if count <= 1 {
+		writeError(w, http.StatusBadRequest, "LAST_CONFIG", "Cannot delete the last active config.")
+		return
+	}
+	_, _ = a.DB.Exec(`DELETE FROM provider_configs WHERE id=?`, configID)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Config deleted."})
+}
+
+func (a *App) updateGoogleConfig(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	configID := r.PathValue("id")
+	var body struct {
+		Status string `json:"status"`
+		Label  string `json:"label"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid body.")
+		return
+	}
+	// Check ownership
+	var ownerID string
+	err := a.DB.QueryRow(`SELECT user_id FROM provider_configs WHERE id=?`, configID).Scan(&ownerID)
+	if err != nil || ownerID != user.ID {
+		writeError(w, http.StatusNotFound, "CONFIG_NOT_FOUND", "Config not found.")
+		return
+	}
+	if body.Status != "" && body.Status != "active" && body.Status != "disabled" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Status must be 'active' or 'disabled'.")
+		return
+	}
+	if body.Label != "" {
+		_, _ = a.DB.Exec(`UPDATE provider_configs SET label=? WHERE id=?`, body.Label, configID)
+	}
+	if body.Status != "" {
+		_, _ = a.DB.Exec(`UPDATE provider_configs SET status=? WHERE id=?`, body.Status, configID)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Config updated."})
 }
 
 func (a *App) systemUpdate(w http.ResponseWriter, r *http.Request) {
@@ -393,14 +494,31 @@ func (a *App) systemUpdate(w http.ResponseWriter, r *http.Request) {
 func (a *App) googleConnectURL(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	var id, encryptedID, redirectURI, scopes string
-	// Pick config with least recent usage (round-robin load balancing across Google Cloud projects)
-	err := a.DB.QueryRow(`SELECT id,client_id_encrypted,redirect_uri,scopes FROM provider_configs WHERE user_id=? AND provider='google_drive' AND status='active' ORDER BY last_used_at IS NULL DESC, last_used_at ASC LIMIT 1`, user.ID).Scan(&id, &encryptedID, &redirectURI, &scopes)
+	// Pick config with quota < 8000 in current 100s window, fallback to least recent usage
+	now := time.Now().UTC()
+	windowStart := now.Add(-100 * time.Second).Format(time.RFC3339Nano)
+	err := a.DB.QueryRow(`
+		SELECT p.id, p.client_id_encrypted, p.redirect_uri, p.scopes 
+		FROM provider_configs p 
+		LEFT JOIN provider_config_quota q ON q.provider_config_id = p.id 
+		WHERE p.user_id=? AND p.provider='google_drive' AND p.status='active' 
+		  AND (q.request_count IS NULL OR q.request_count < 8000 OR q.window_start < ?)
+		ORDER BY p.last_used_at IS NULL DESC, p.last_used_at ASC 
+		LIMIT 1`, user.ID, windowStart).Scan(&id, &encryptedID, &redirectURI, &scopes)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "GOOGLE_NOT_CONFIGURED", "Configure Google OAuth first.")
+		writeError(w, http.StatusBadRequest, "GOOGLE_NOT_CONFIGURED", "Configure Google OAuth first or all configs at quota limit.")
 		return
 	}
-	// Update last_used_at to current time
-	_, _ = a.DB.Exec(`UPDATE provider_configs SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	// Update last_used_at and increment quota counter
+	_, _ = a.DB.Exec(`UPDATE provider_configs SET last_used_at=? WHERE id=?`, now.Format(time.RFC3339Nano), id)
+	_, _ = a.DB.Exec(`
+		INSERT INTO provider_config_quota (id, provider_config_id, request_count, window_start) 
+		VALUES (?, ?, 1, ?) 
+		ON CONFLICT(provider_config_id) DO UPDATE SET 
+			request_count = CASE WHEN window_start < ? THEN 1 ELSE request_count + 1 END,
+			window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END,
+			updated_at = CURRENT_TIMESTAMP`, 
+		randomID(), id, now.Format(time.RFC3339Nano), windowStart, windowStart, now.Format(time.RFC3339Nano))
 	clientID, err := a.decrypt(encryptedID)
 	if err != nil {
 		writeError(w, 500, "GOOGLE_CONFIG_FAILED", "Unable to read Google config.")
