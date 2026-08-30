@@ -3,6 +3,7 @@ import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
+import { OAuthConfigManager } from '@/components/drive/OAuthConfigManager'
 import { PageHeader } from '@/components/drive/PageHeader'
 import { apiFetch, formatBytes, API_URL } from '@/lib/api'
 import { getGravatarUrl } from '@/lib/gravatar'
@@ -518,87 +519,7 @@ export function SettingsPage() {
             </div>
           </Card>
 
-          <Card className="p-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
-              <div className="flex items-center gap-2.5">
-                <Cloud className="h-5 w-5 text-blue-600" />
-                <h2 className="text-[17px] font-bold">Google OAuth Credentials</h2>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs font-semibold"
-                type="button"
-                onClick={() => setShowGoogleHelp(!showGoogleHelp)}
-              >
-                {showGoogleHelp ? 'Hide Guide' : 'Setup Guide'}
-              </Button>
-            </div>
-
-            {showGoogleHelp && (
-              <div className="mb-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 p-3.5 text-[13px] leading-relaxed text-slate-600 border border-slate-100 dark:border-slate-800">
-                <p className="font-bold text-slate-800 dark:text-slate-200 mb-1.5">How to setup Google credentials:</p>
-                <ol className="list-decimal pl-4 space-y-1.5">
-                  <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google Cloud Console</a>.</li>
-                  <li>Enable the <strong>Google Drive API</strong> in your project.</li>
-                  <li>Go to <strong>APIs & Services &gt; Credentials</strong>, click <strong>Create Credentials &gt; OAuth client ID</strong>.</li>
-                  <li>Set application type to <strong>Web application</strong>.</li>
-                  <li>Add this exact URL under <strong>Authorized redirect URIs</strong>:
-                    <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] bg-white dark:bg-slate-950 p-1.5 rounded border border-slate-200 dark:border-slate-800 select-all overflow-x-auto">
-                      {googleRedirectUri || defaultRedirectUri}
-                    </div>
-                  </li>
-                  <li>Copy the generated <strong>Client ID</strong> and <strong>Client Secret</strong> into the form below and save.</li>
-                </ol>
-              </div>
-            )}
-
-              <form onSubmit={saveGoogleConfig} className="grid gap-3.5" autoComplete="off">
-                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                  Client ID
-                  <input
-                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                    placeholder="Enter Google Client ID"
-                    value={googleClientId}
-                    onChange={(e) => setGoogleClientId(e.target.value)}
-                    required
-                    autoComplete="new-password"
-                    name="client_id_field"
-                  />
-                </label>
-
-                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                  Client Secret {hasSecret && <span className="font-normal text-emerald-600">(Already Configured)</span>}
-                  <input
-                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                    type="password"
-                    placeholder={hasSecret ? "••••••••••••••••••••••••" : "Enter Google Client Secret"}
-                    value={googleClientSecret}
-                    onChange={(e) => setGoogleClientSecret(e.target.value)}
-                    required={!hasSecret}
-                    autoComplete="new-password"
-                    name="client_secret_field"
-                  />
-                </label>
-
-                <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                  Redirect URI (Optional)
-                  <input
-                    className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
-                    placeholder={defaultRedirectUri}
-                    value={googleRedirectUri}
-                    onChange={(e) => setGoogleRedirectUri(e.target.value)}
-                    autoComplete="off"
-                  />
-                </label>
-
-              <div className="flex justify-end mt-1">
-                <Button type="submit" disabled={savingGoogleConfig} size="sm">
-                  {savingGoogleConfig ? 'Saving...' : 'Save Credentials'}
-                </Button>
-              </div>
-            </form>
-          </Card>
+          <OAuthConfigManager />
 
           <Card className="overflow-hidden p-3.5">
             <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
