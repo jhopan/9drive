@@ -501,3 +501,29 @@ git push origin main             # Push
 **Repository:** https://github.com/jhopan/9drive
 **Owner:** Jhopan (jhopanstore@gmail.com)
 **Current date:** 2026-08-30
+
+### 📤 Git Push Policy (MANDATORY)
+
+**ALWAYS push changes to GitHub after committing!**
+
+Every commit MUST be followed by push to origin/main.
+
+```bash
+# Correct workflow
+git add -A
+git commit -m "feat: add feature X"
+git push origin main              # REQUIRED - never skip
+
+# Wrong - commit without push
+git commit -m "fix: bug Y"
+# ... then forget to push = changes not backed up
+```
+
+**Why this matters:**
+- User expects changes in GitHub repository
+- Local commits without push = work not backed up
+- Other developers/devices cannot see changes
+- CI/CD pipelines will not trigger
+
+**Rule:** Every git commit MUST be immediately followed by git push origin main.
+
