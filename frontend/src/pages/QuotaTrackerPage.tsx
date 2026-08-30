@@ -188,8 +188,7 @@ export function QuotaTrackerPage() {
           <Card className="col-span-full p-8 text-center">
             <Cloud className="mx-auto h-10 w-10 text-blue-600" />
             <h2 className="mt-4 text-xl font-extrabold">No connected drives</h2>
-            <p className="mt-2 text-sm text-slate-500">Connect Google Drive or S3-compatible storage to start tracking quota.</p>
-            <Button className="mt-5" onClick={connectDrive}><Link2 className="h-4 w-4" />Connect Drive</Button>
+            <p className="mt-2 text-sm text-slate-500">Connect Google Drive or S3-compatible storage via Settings page.</p>
           </Card>
         ) : accounts.map((account) => {
           const percent = pct(account)
