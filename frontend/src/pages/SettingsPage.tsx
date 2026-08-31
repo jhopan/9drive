@@ -258,8 +258,6 @@ export function SettingsPage() {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
-  const [googleConnectUrl, setGoogleConnectUrl] = useState('')
-  const [showGoogleConnectModal, setShowGoogleConnectModal] = useState(false)
   const [googleCallbackUrl, setGoogleCallbackUrl] = useState('')
   const [googleCallbackLoading, setGoogleCallbackLoading] = useState(false)
 
