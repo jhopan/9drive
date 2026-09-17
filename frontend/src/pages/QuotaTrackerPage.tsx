@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, Cloud, Database, Filter, Gauge, Link2, RefreshCw } from 'lucide-react'
+import { CheckCircle, Cloud, Database, Filter, Gauge, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/drive/PageHeader'
@@ -91,24 +91,6 @@ export function QuotaTrackerPage() {
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [])
-
-  async function connectDrive() {
-    const popup = window.open('', 'google-drive-connect', 'width=540,height=720')
-    if (popup) {
-      popup.document.write('<html><head><title>Connecting...</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f8fafc;color:#64748b;}</style></head><body><div style="text-align:center;"><h2>Connecting to Google...</h2><p>Please wait while we redirect you.</p></div></body></html>')
-    }
-    try {
-      const data = await apiFetch<{ url: string }>('/connected-accounts/google/connect-url')
-      if (popup) {
-        popup.location.href = data.url
-      } else {
-        window.location.href = data.url
-      }
-    } catch (e) {
-      if (popup) popup.close()
-      console.error('Failed to start Google Drive connection from Quota Tracker', e)
-    }
-  }
 
   async function sync(accountId: string) {
     setSyncingAccountId(accountId)

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type FormEvent } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -42,10 +42,6 @@ export function SettingsPage() {
   const [updateModalTitle, setUpdateModalTitle] = useState('')
 
   // Google OAuth Config states
-  const [googleClientId, setGoogleClientId] = useState('')
-  const [googleClientSecret, setGoogleClientSecret] = useState('')
-  const [googleRedirectUri, setGoogleRedirectUri] = useState('')
-  const [defaultRedirectUri, setDefaultRedirectUri] = useState('')
   const [googleConnectUrl, setGoogleConnectUrl] = useState('')
   const [showGoogleConnectModal, setShowGoogleConnectModal] = useState(false)
 
@@ -215,18 +211,6 @@ export function SettingsPage() {
   async function load() {
     const data = await apiFetch<{ accounts: ConnectedAccount[] }>('/connected-accounts')
     setAccounts(data.accounts)
-
-    try {
-      const configData = await apiFetch<{ exists: boolean; clientId: string; redirectUri: string; hasSecret: boolean; defaultRedirectUri: string }>('/system/google-config')
-      if (configData.exists) {
-        setGoogleClientId(configData.clientId || '')
-        setGoogleRedirectUri(configData.redirectUri || '')
-        setHasSecret(configData.hasSecret || false)
-      }
-      setDefaultRedirectUri(configData.defaultRedirectUri || '')
-    } catch (e) {
-      console.error('Failed to load global Google config', e)
-    }
   }
 
   useEffect(() => {
