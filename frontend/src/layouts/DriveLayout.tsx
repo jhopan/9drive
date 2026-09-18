@@ -214,7 +214,7 @@ export function DriveLayout() {
       setSetupLoading(false)
     }
   }
-  const { uploadProgress, setUploadProgress, retryFailedUpload } = useUpload()
+  const { uploadProgress, setUploadProgress, retryFailedUpload, pauseFile, resumeFile } = useUpload()
   const [uploadProgressCollapsed, setUploadProgressCollapsed] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('9drive:theme')
@@ -541,8 +541,8 @@ export function DriveLayout() {
         <div className="fixed inset-x-3 bottom-3 z-[70] max-h-[70dvh] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20 sm:inset-x-auto sm:bottom-5 sm:right-5 sm:w-[min(420px,calc(100vw-2.5rem))]">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <div className="flex items-center gap-2 font-extrabold text-sm text-slate-950">
-              {uploadProgress.status === 'done' ? <CheckCircle className="h-5 w-5 text-emerald-500" /> : uploadProgress.status === 'partial' || uploadProgress.status === 'error' ? <X className="h-5 w-5 text-red-500" /> : <Upload className="h-5 w-5 text-blue-600" />}
-              {uploadProgress.status === 'done' ? 'Upload complete' : uploadProgress.status === 'partial' ? 'Upload completed with errors' : uploadProgress.status === 'error' ? 'Upload failed' : uploadProgress.percent >= 99 ? 'Processing on server' : 'Uploading files'}
+              {uploadProgress.status === 'done' ? <CheckCircle className="h-5 w-5 text-emerald-500" /> : uploadProgress.status === 'partial' || uploadProgress.status === 'error' ? <X className="h-5 w-5 text-red-500" /> : uploadProgress.status === 'paused' ? <Upload className="h-5 w-5 text-slate-400" /> : <Upload className="h-5 w-5 text-blue-600" />}
+              {uploadProgress.status === 'done' ? 'Upload complete' : uploadProgress.status === 'partial' ? 'Upload completed with errors' : uploadProgress.status === 'error' ? 'Upload failed' : uploadProgress.status === 'paused' ? 'Upload paused' : uploadProgress.percent >= 99 ? 'Processing on server' : 'Uploading files'}
             </div>
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setUploadProgressCollapsed(!uploadProgressCollapsed)}><ChevronDown className={cn("h-4 w-4 transition-transform", uploadProgressCollapsed && "rotate-180")} /></Button>
@@ -574,8 +574,18 @@ export function DriveLayout() {
                               Retry
                             </Button>
                           )}
-                          <span className={file.status === 'error' ? 'font-semibold text-red-600' : file.status === 'done' ? 'font-semibold text-emerald-600' : 'font-semibold text-blue-600'}>
-                            {file.status === 'error' ? 'Failed' : file.status === 'done' ? 'Done' : file.percent >= 99 ? 'Processing' : 'Uploading'}
+                          {file.status === 'uploading' && (
+                            <Button variant="outline" className="h-6 px-2 text-[11px] font-extrabold" onClick={() => pauseFile(file.name)}>
+                              Pause
+                            </Button>
+                          )}
+                          {file.status === 'paused' && (
+                            <Button variant="default" className="h-6 px-2 text-[11px] font-extrabold text-white bg-blue-600 hover:bg-blue-700 shadow-none border-none" onClick={() => resumeFile(file.name)}>
+                              Resume
+                            </Button>
+                          )}
+                          <span className={file.status === 'error' ? 'font-semibold text-red-600' : file.status === 'done' ? 'font-semibold text-emerald-600' : file.status === 'paused' ? 'font-semibold text-slate-600' : 'font-semibold text-blue-600'}>
+                            {file.status === 'error' ? 'Failed' : file.status === 'done' ? 'Done' : file.status === 'paused' ? 'Paused' : file.percent >= 99 ? 'Processing' : 'Uploading'}
                           </span>
                         </div>
                       </div>
