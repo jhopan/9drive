@@ -672,35 +672,23 @@ func (a *App) getGoogleToken(ctx context.Context, accountID string, forceRefresh
 	return newToken.AccessToken, nil
 }
 
-func (a *App) syncQuota(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value(userKey).(authUser)
-	accountID := r.PathValue("id")
-	var ownerID string
-	err := a.DB.QueryRow(`SELECT user_id FROM connected_accounts WHERE id=?`, accountID).Scan(&ownerID)
-	if err != nil || ownerID != user.ID {
-		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "Account not found.")
-		return
-	}
-	accessToken, err := a.getGoogleToken(r.Context(), accountID, false)
+func (a *App) syncAccountQuota(ctx context.Context, accountID string) error {
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
 	if err != nil {
-		writeError(w, 500, "QUOTA_FAILED", "Unable to read account token.")
-		return
+		return err
 	}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/about?fields=storageQuota`, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+`/about?fields=storageQuota`, nil)
 	if err != nil {
-		writeError(w, 500, "QUOTA_FAILED", "Unable to create Drive request.")
-		return
+		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	response, err := a.HTTPClient.Do(request)
 	if err != nil {
-		writeError(w, 502, "GOOGLE_UNAVAILABLE", "Google Drive quota request failed.")
-		return
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		writeError(w, 502, "GOOGLE_QUOTA_FAILED", "Google Drive rejected quota request.")
-		return
+		return fmt.Errorf("google quota request rejected (%d)", response.StatusCode)
 	}
 	var payload struct {
 		StorageQuota struct {
@@ -710,8 +698,7 @@ func (a *App) syncQuota(w http.ResponseWriter, r *http.Request) {
 		} `json:"storageQuota"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
-		writeError(w, 502, "GOOGLE_QUOTA_FAILED", "Invalid Google Drive quota response.")
-		return
+		return err
 	}
 	var total, used, trash int64
 	_, _ = fmt.Sscan(payload.StorageQuota.Limit, &total)
@@ -723,10 +710,24 @@ func (a *App) syncQuota(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = a.DB.Exec(`INSERT INTO storage_accounts (id,connected_account_id,total_bytes,used_bytes,available_bytes,trash_bytes,last_synced_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(connected_account_id) DO UPDATE SET total_bytes=excluded.total_bytes,used_bytes=excluded.used_bytes,available_bytes=excluded.available_bytes,trash_bytes=excluded.trash_bytes,last_synced_at=excluded.last_synced_at`, randomID(), accountID, total, used, available, trash, now)
-	if err != nil {
-		writeError(w, 500, "QUOTA_FAILED", "Unable to save quota.")
+	return err
+}
+
+func (a *App) syncQuota(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	accountID := r.PathValue("id")
+	var ownerID string
+	err := a.DB.QueryRow(`SELECT user_id FROM connected_accounts WHERE id=?`, accountID).Scan(&ownerID)
+	if err != nil || ownerID != user.ID {
+		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "Account not found.")
 		return
 	}
+	if err := a.syncAccountQuota(r.Context(), accountID); err != nil {
+		writeError(w, 502, "QUOTA_FAILED", "Unable to sync account quota.")
+		return
+	}
+	var total, used, available, trash int64
+	_ = a.DB.QueryRow(`SELECT COALESCE(total_bytes,0),COALESCE(used_bytes,0),COALESCE(available_bytes,0),COALESCE(trash_bytes,0) FROM storage_accounts WHERE connected_account_id=?`, accountID).Scan(&total, &used, &available, &trash)
 	writeJSON(w, http.StatusOK, map[string]any{"quota": map[string]string{"totalBytes": fmt.Sprint(total), "usedBytes": fmt.Sprint(used), "availableBytes": fmt.Sprint(available), "trashBytes": fmt.Sprint(trash)}})
 }
 
@@ -1051,6 +1052,8 @@ func (a *App) resumableChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "UPLOAD_CHUNK_FAILED", "Unable to save uploaded file.")
 		return
 	}
+	// Approximate local quota update; corrected at next quota sync.
+	_, _ = a.DB.Exec(`UPDATE storage_accounts SET available_bytes=MAX(0, available_bytes-?), used_bytes=used_bytes+? WHERE connected_account_id=?`, size, size, accountID)
 	_, _ = a.DB.Exec(`UPDATE upload_sessions SET status='completed',completed_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	writeJSON(w, 200, map[string]string{"status": "completed"})
 }
@@ -1556,6 +1559,32 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("9Drive Go listening on http://127.0.0.1:%s", config.AppPort)
+
+	// Background quota sync: refresh all connected accounts every 5 minutes.
+	go func() {
+		for {
+			rows, err := app.DB.Query(`SELECT id FROM connected_accounts WHERE status='connected' AND provider='google_drive'`)
+			if err == nil {
+				ids := []string{}
+				for rows.Next() {
+					var id string
+					if rows.Scan(&id) == nil {
+						ids = append(ids, id)
+					}
+				}
+				rows.Close()
+				for _, id := range ids {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := app.syncAccountQuota(ctx, id); err != nil {
+						log.Printf("background quota sync failed for account %s: %v", id, err)
+					}
+					cancel()
+				}
+			}
+			time.Sleep(5 * time.Minute)
+		}
+	}()
+
 	log.Fatal(http.ListenAndServe("127.0.0.1:"+config.AppPort, app.Router()))
 }
 
