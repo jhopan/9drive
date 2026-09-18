@@ -1368,13 +1368,22 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	expiresToken := token.Expiry.UTC().Format(time.RFC3339Nano)
-	_, err = a.DB.Exec(`INSERT INTO connected_accounts (id,user_id,provider_config_id,provider,provider_account_id,email,display_name,avatar_url,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'connected',?) ON CONFLICT(user_id,provider,provider_account_id) DO UPDATE SET provider_config_id=excluded.provider_config_id,email=excluded.email,display_name=excluded.display_name,avatar_url=excluded.avatar_url,access_token_encrypted=excluded.access_token_encrypted,refresh_token_encrypted=excluded.refresh_token_encrypted,token_expires_at=excluded.token_expires_at,scopes=excluded.scopes,status='connected',updated_at=excluded.updated_at`, randomID(), userID, configID, "google_drive", profile.ID, profile.Email, profile.Name, profile.Picture, a.encrypt(token.AccessToken), a.encrypt(refreshToken), expiresToken, scopes, now)
+	accountID := randomID()
+	_, err = a.DB.Exec(`INSERT INTO connected_accounts (id,user_id,provider_config_id,provider,provider_account_id,email,display_name,avatar_url,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'connected',?) ON CONFLICT(user_id,provider,provider_account_id) DO UPDATE SET provider_config_id=excluded.provider_config_id,email=excluded.email,display_name=excluded.display_name,avatar_url=excluded.avatar_url,access_token_encrypted=excluded.access_token_encrypted,refresh_token_encrypted=excluded.refresh_token_encrypted,token_expires_at=excluded.token_expires_at,scopes=excluded.scopes,status='connected',updated_at=excluded.updated_at`, accountID, userID, configID, "google_drive", profile.ID, profile.Email, profile.Name, profile.Picture, a.encrypt(token.AccessToken), a.encrypt(refreshToken), expiresToken, scopes, now)
 	if err != nil {
 		log.Printf("Google account persistence failed: %v", err)
 		redirectError()
 		return
 	}
 	_, _ = a.DB.Exec(`UPDATE oauth_states SET used_at=? WHERE id=?`, now, stateID)
+	// Auto-sync quota so the new account shows storage immediately.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := a.syncAccountQuota(ctx, accountID); err != nil {
+			log.Printf("auto quota sync after connect failed for account %s: %v", accountID, err)
+		}
+	}()
 	if wantsJSON {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	} else {
