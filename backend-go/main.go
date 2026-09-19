@@ -618,7 +618,12 @@ func (a *App) listAccounts(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "ACCOUNTS_FAILED", "Unable to read connected accounts.")
 			return
 		}
-		accounts = append(accounts, map[string]any{"id": id, "provider": provider, "email": email, "displayName": displayName, "status": status, "storageAccount": map[string]string{"totalBytes": fmt.Sprint(total), "usedBytes": fmt.Sprint(used), "availableBytes": fmt.Sprint(available), "lastSyncedAt": lastSynced}})
+		// Cheap token health check: refresh-token failure marks the account for reconnect.
+		needsReconnect := false
+		if _, err := a.getGoogleToken(r.Context(), id, false); err != nil {
+			needsReconnect = true
+		}
+		accounts = append(accounts, map[string]any{"id": id, "provider": provider, "email": email, "displayName": displayName, "status": status, "needsReconnect": needsReconnect, "storageAccount": map[string]string{"totalBytes": fmt.Sprint(total), "usedBytes": fmt.Sprint(used), "availableBytes": fmt.Sprint(available), "lastSyncedAt": lastSynced}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
 }
@@ -1255,52 +1260,68 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 	if err != nil {
 		return 0, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+`/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	response, err := a.HTTPClient.Do(req)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("google drive listing rejected (%d)", response.StatusCode)
-	}
-	var payload struct {
-		Files []struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			MIMEType string `json:"mimeType"`
-			Size     string `json:"size"`
-			Created  string `json:"createdTime"`
-			Modified string `json:"modifiedTime"`
-			Trashed  bool   `json:"trashed"`
-		} `json:"files"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&payload); err != nil {
-		return 0, 0, err
-	}
-	for _, item := range payload.Files {
-		if item.ID == "" || item.Trashed {
-			continue
+	// Paginated listing: loop through all pages via nextPageToken (Google caps 1000/page).
+	pageToken := ""
+	for {
+		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`
+		if pageToken != "" {
+			listURL += `&pageToken=` + url.QueryEscape(pageToken)
 		}
-		var size int64
-		_, _ = fmt.Sscan(item.Size, &size)
-		var exists int
-		_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
-		if exists == 1 {
-			_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, item.Modified, userID, accountID, item.ID)
-			if err == nil {
-				updated++
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return created, updated, err
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		response, err := a.HTTPClient.Do(req)
+		if err != nil {
+			return created, updated, err
+		}
+		if response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			return created, updated, fmt.Errorf("google drive listing rejected (%d): %s", response.StatusCode, string(body))
+		}
+		var payload struct {
+			NextPageToken string `json:"nextPageToken"`
+			Files []struct {
+				ID       string `json:"id"`
+				Name     string `json:"name"`
+				MIMEType string `json:"mimeType"`
+				Size     string `json:"size"`
+				Created  string `json:"createdTime"`
+				Modified string `json:"modifiedTime"`
+				Trashed  bool   `json:"trashed"`
+			} `json:"files"`
+		}
+		err = json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&payload)
+		response.Body.Close()
+		if err != nil {
+			return created, updated, err
+		}
+		for _, item := range payload.Files {
+			if item.ID == "" || item.Trashed {
+				continue
 			}
-		} else {
-			_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, item.Created, item.Modified)
-			if err == nil {
-				created++
+			var size int64
+			_, _ = fmt.Sscan(item.Size, &size)
+			var exists int
+			_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
+			if exists == 1 {
+				_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, item.Modified, userID, accountID, item.ID)
+				if err == nil {
+					updated++
+				}
+			} else {
+				_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, item.Created, item.Modified)
+				if err == nil {
+					created++
+				}
 			}
 		}
+		if payload.NextPageToken == "" {
+			break
+		}
+		pageToken = payload.NextPageToken
 	}
 	return created, updated, nil
 }
