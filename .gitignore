@@ -22,3 +22,7 @@ frontend/.env.*.local
 backend-go/*.exe
 
 backend-go/*.exe~
+
+# Build artifacts
+backend-go/dist/
+backend-go/release/

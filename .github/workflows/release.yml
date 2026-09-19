@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Embed dist
+        run: |
+          rm -rf backend-go/dist
+          cp -r frontend/dist backend-go/dist
+
+      - name: Cross compile
+        working-directory: backend-go
+        run: |
+          mkdir -p release
+          LDFLAGS="-s -w -X main.buildVersion=${GITHUB_REF_NAME}"
+          for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="${t%/*}"; GOARCH="${t#*/}"
+            SUFFIX=""
+            [ "$GOOS" = "windows" ] && SUFFIX=".exe"
+            echo "Building 9drive-${GOOS}-${GOARCH}${SUFFIX}"
+            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "release/9drive-${GOOS}-${GOARCH}${SUFFIX}" .
+          done
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: backend-go/release/9drive-*
+          generate_release_notes: true

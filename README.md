@@ -92,3 +92,64 @@ http://localhost:4000/connected-accounts/google/callback
 ## License
 
 MIT
+
+
+## Deployment (universal)
+
+Single binary contains both API and frontend (embedded). Ports/paths via env (see `backend-go/.env.example`).
+
+### Build
+
+```bash
+./build-release.sh v1.0.0        # local: builds all 6 targets into backend-go/release/
+# or push a tag: git tag v1.0.0 && git push origin v1.0.0  -> GitHub Actions builds + releases
+```
+
+Targets: windows/amd64, windows/arm64, linux/amd64, linux/arm64, darwin/amd64, darwin/arm64.
+
+### Run
+
+```bash
+./9drive-linux-amd64             # serves API + UI on :4000 (or APP_PORT from .env)
+```
+
+### Auto-start service
+
+**Linux (systemd)** — `/etc/systemd/system/9drive.service`:
+```ini
+[Unit]
+Description=9Drive
+After=network-online.target
+
+[Service]
+ExecStart=/opt/9drive/9drive-linux-amd64
+WorkingDirectory=/opt/9drive
+Restart=always
+User=www-data
+
+[Install]
+WantedBy=multi-user.target
+```
+`sudo systemctl enable --now 9drive`
+
+**Windows (NSSM)**:
+```
+nssm install 9drive C:\path\to\9drive-windows-amd64.exe
+nssm set 9drive AppDirectory C:\path\to
+nssm start 9drive
+```
+
+**macOS (launchd)** — `~/Library/Launchers/com.jhopan.9drive.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jhopan.9drive</string>
+  <key>ProgramArguments</key><array><string>/opt/9drive/9drive-darwin-arm64</string></array>
+  <key>WorkingDirectory</key><string>/opt/9drive</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+</dict></plist>
+```
+`launchctl load ~/Library/Launchers/com.jhopan.9drive.plist`
+
+**Database:** `data/9drive.db` next to the binary (WorkingDirectory). Back up this file; use Settings > Backup for download.

@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"embed"
+
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -14,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +43,9 @@ type Config struct {
 	GoogleClientSecret string
 	GoogleRedirectURI  string
 }
+
+// buildVersion is injected at link time via -ldflags "-X main.buildVersion=...".
+var buildVersion = "dev"
 
 type App struct {
 	DB                 *sql.DB
@@ -286,6 +292,38 @@ func (a *App) bootstrapGoogleConfig() error {
 	return nil
 }
 
+//go:embed all:dist
+var distFS embed.FS
+
+// serveSPA serves the embedded frontend build with SPA fallback to index.html.
+func serveSPA() http.HandlerFunc {
+	sub, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, 500, "EMBED_FAILED", "Frontend assets unavailable.")
+		}
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		if _, err := fs.Stat(sub, path); err == nil {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// SPA fallback: unknown paths render the app shell.
+		index, err := fs.ReadFile(sub, "index.html")
+		if err != nil {
+			writeError(w, 500, "EMBED_FAILED", "Frontend index unavailable.")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(index)
+	}
+}
+
 func (a *App) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", a.health)
@@ -327,7 +365,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /uploads/resumable/init", a.requireAuth(a.initResumableUpload))
 	mux.HandleFunc("GET /uploads/resumable/status/{id}", a.requireAuth(a.resumableStatus))
 	mux.HandleFunc("PUT /uploads/resumable/chunk/{id}", a.requireAuth(a.resumableChunk))
-	mux.HandleFunc("/", jsonNotFound)
+	mux.HandleFunc("/", serveSPA())
 	return a.cors(mux)
 }
 
@@ -1574,9 +1612,6 @@ func (a *App) cors(next http.Handler) http.Handler {
 	})
 }
 
-func jsonNotFound(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotFound, "NOT_FOUND", "Route not found")
-}
 func decodeJSON(r *http.Request, value any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(value)
@@ -1662,7 +1697,7 @@ func main() {
 	if err := app.bootstrapGoogleConfig(); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("9Drive Go listening on http://127.0.0.1:%s", config.AppPort)
+	log.Printf("9Drive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
 
 	// Background sync: quota + file metadata for all connected accounts every 5 minutes.
 	go func() {
