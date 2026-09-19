@@ -20,3 +20,5 @@ backups/
 frontend/.env.local
 frontend/.env.*.local
 backend-go/*.exe
+
+backend-go/*.exe~
