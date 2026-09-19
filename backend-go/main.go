@@ -1182,6 +1182,61 @@ func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, response.Body)
 }
 
+func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (created, updated int, err error) {
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+`/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("google drive listing rejected (%d)", response.StatusCode)
+	}
+	var payload struct {
+		Files []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			MIMEType string `json:"mimeType"`
+			Size     string `json:"size"`
+			Created  string `json:"createdTime"`
+			Modified string `json:"modifiedTime"`
+			Trashed  bool   `json:"trashed"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&payload); err != nil {
+		return 0, 0, err
+	}
+	for _, item := range payload.Files {
+		if item.ID == "" || item.Trashed {
+			continue
+		}
+		var size int64
+		_, _ = fmt.Sscan(item.Size, &size)
+		var exists int
+		_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
+		if exists == 1 {
+			_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, item.Modified, userID, accountID, item.ID)
+			if err == nil {
+				updated++
+			}
+		} else {
+			_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, item.Created, item.Modified)
+			if err == nil {
+				created++
+			}
+		}
+	}
+	return created, updated, nil
+}
+
 func (a *App) syncGoogleFiles(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	requestedID := r.URL.Query().Get("connectedAccountId")
@@ -1204,62 +1259,10 @@ func (a *App) syncGoogleFiles(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "SYNC_FAILED", "Unable to read Drive account.")
 			return
 		}
-		accessToken, err := a.getGoogleToken(r.Context(), accountID, false)
+		created, updated, err := a.syncAccountFiles(r.Context(), user.ID, accountID)
 		if err != nil {
-			results = append(results, map[string]any{"accountId": accountID, "error": "Unable to read Drive token"})
+			results = append(results, map[string]any{"accountId": accountID, "error": err.Error()})
 			continue
-		}
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`, nil)
-		if err != nil {
-			results = append(results, map[string]any{"accountId": accountID, "error": "Unable to create Drive request"})
-			continue
-		}
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		response, err := a.HTTPClient.Do(req)
-		if err != nil || response.StatusCode != http.StatusOK {
-			if response != nil {
-				response.Body.Close()
-			}
-			results = append(results, map[string]any{"accountId": accountID, "error": "Google Drive listing failed"})
-			continue
-		}
-		var payload struct {
-			Files []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				MIMEType string `json:"mimeType"`
-				Size     string `json:"size"`
-				Created  string `json:"createdTime"`
-				Modified string `json:"modifiedTime"`
-				Trashed  bool   `json:"trashed"`
-			} `json:"files"`
-		}
-		err = json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&payload)
-		response.Body.Close()
-		if err != nil {
-			results = append(results, map[string]any{"accountId": accountID, "error": "Invalid Google Drive response"})
-			continue
-		}
-		created, updated := 0, 0
-		for _, item := range payload.Files {
-			if item.ID == "" || item.Trashed {
-				continue
-			}
-			var size int64
-			_, _ = fmt.Sscan(item.Size, &size)
-			var exists int
-			_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, user.ID, accountID, item.ID).Scan(&exists)
-			if exists == 1 {
-				_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, item.Modified, user.ID, accountID, item.ID)
-				if err == nil {
-					updated++
-				}
-			} else {
-				_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, randomID(), user.ID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, item.Created, item.Modified)
-				if err == nil {
-					created++
-				}
-			}
 		}
 		results = append(results, map[string]any{"accountId": accountID, "created": created, "updated": updated})
 	}
@@ -1376,12 +1379,15 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = a.DB.Exec(`UPDATE oauth_states SET used_at=? WHERE id=?`, now, stateID)
-	// Auto-sync quota so the new account shows storage immediately.
+	// Auto-sync quota + file metadata so the new account shows storage and files immediately.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := a.syncAccountQuota(ctx, accountID); err != nil {
 			log.Printf("auto quota sync after connect failed for account %s: %v", accountID, err)
+		}
+		if _, _, err := a.syncAccountFiles(ctx, userID, accountID); err != nil {
+			log.Printf("auto file sync after connect failed for account %s: %v", accountID, err)
 		}
 	}()
 	if wantsJSON {
@@ -1569,23 +1575,29 @@ func main() {
 	}
 	log.Printf("9Drive Go listening on http://127.0.0.1:%s", config.AppPort)
 
-	// Background quota sync: refresh all connected accounts every 5 minutes.
+	// Background sync: quota + file metadata for all connected accounts every 5 minutes.
 	go func() {
 		for {
-			rows, err := app.DB.Query(`SELECT id FROM connected_accounts WHERE status='connected' AND provider='google_drive'`)
+			type acct struct {
+				id, owner string
+			}
+			rows, err := app.DB.Query(`SELECT id, user_id FROM connected_accounts WHERE status='connected' AND provider='google_drive'`)
 			if err == nil {
-				ids := []string{}
+				accs := []acct{}
 				for rows.Next() {
-					var id string
-					if rows.Scan(&id) == nil {
-						ids = append(ids, id)
+					var a2 acct
+					if rows.Scan(&a2.id, &a2.owner) == nil {
+						accs = append(accs, a2)
 					}
 				}
 				rows.Close()
-				for _, id := range ids {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					if err := app.syncAccountQuota(ctx, id); err != nil {
-						log.Printf("background quota sync failed for account %s: %v", id, err)
+				for _, a2 := range accs {
+					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					if err := app.syncAccountQuota(ctx, a2.id); err != nil {
+						log.Printf("background quota sync failed for account %s: %v", a2.id, err)
+					}
+					if _, _, err := app.syncAccountFiles(ctx, a2.owner, a2.id); err != nil {
+						log.Printf("background file sync failed for account %s: %v", a2.id, err)
 					}
 					cancel()
 				}

@@ -616,6 +616,14 @@ export function AllFilesPage() {
     return () => window.removeEventListener('9drive:upload-completed', handleUploadCompleted)
   }, [activeFolderId])
 
+  // Poll backend for new files every 60s so background syncs appear without manual refresh.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadAll().catch(() => undefined)
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [activeFolderId, searchQuery])
+
   useEffect(() => {
     const sizeLabels: FolderSizeScale[] = ['xs', 'sm', 'md', 'lg']
     setHeaderActions(
