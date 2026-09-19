@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"os/exec"
 	"strings"
 	"sync"
@@ -115,6 +116,23 @@ type authUser struct {
 type ctxKey string
 
 const userKey ctxKey = "user"
+
+// dataDirFromURL extracts the directory part of a sqlite file: URL, if any.
+func dataDirFromURL(databaseURL string) string {
+	u, err := url.Parse(databaseURL)
+	if err != nil || u.Opaque == "" && u.Path == "" {
+		return ""
+	}
+	path := u.Path
+	if path == "" {
+		path = u.Opaque
+	}
+	// Strip query part of opaque form file:data/9drive.db?_pragma=...
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	return filepath.Dir(path)
+}
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -1682,6 +1700,10 @@ func (a *App) decrypt(value string) (string, error) {
 
 func main() {
 	config := loadConfig()
+	// Ensure the data directory exists (SQLite cannot create parent dirs).
+	if dir := dataDirFromURL(config.DatabaseURL); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
 	db, err := sql.Open("sqlite", config.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
