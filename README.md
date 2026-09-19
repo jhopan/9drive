@@ -153,3 +153,8 @@ nssm start 9drive
 `launchctl load ~/Library/Launchers/com.jhopan.9drive.plist`
 
 **Database:** `data/9drive.db` next to the binary (WorkingDirectory). Back up this file; use Settings > Backup for download.
+
+
+### Cloudflare Tunnel (optional, HTTPS tanpa reverse proxy)
+
+Set `TUNNEL_TOKEN` di .env (Cloudflare Zero Trust > Networks > Tunnels > Create > copy token). Letakkan binary `cloudflared` di samping binary 9drive — backend otomatis menjalankannya saat startup. Aplikasi langsung reachable via HTTPS domain tunnel, tanpa nginx/Caddy.

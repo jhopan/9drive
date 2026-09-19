@@ -424,6 +424,10 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Name, email, and password are required.")
 		return
 	}
+	if len(body.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "WEAK_PASSWORD", "Password must be at least 8 characters.")
+		return
+	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 10)
 	user := authUser{ID: randomID(), Name: body.Name, Email: body.Email}
 	_, err := a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, user.ID, user.Name, user.Email, hash)
@@ -1610,6 +1614,10 @@ func (a *App) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Password != "" {
+		if len(body.Password) < 8 {
+			writeError(w, http.StatusBadRequest, "WEAK_PASSWORD", "Password must be at least 8 characters.")
+			return
+		}
 		hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 10)
 		_, err := a.DB.Exec(`UPDATE users SET name=?, email=?, password_hash=? WHERE id=?`, body.Name, body.Email, hash, user.ID)
 		if err != nil {
@@ -1754,6 +1762,24 @@ func (a *App) decrypt(value string) (string, error) {
 	return string(plain), err
 }
 
+// runTunnel spawns cloudflared (adjacent binary or in PATH) connected to the given tunnel token.
+func runTunnel(config Config, tunnelToken string) {
+	exe := "cloudflared"
+	for _, cand := range []string{"cloudflared.exe", "cloudflared", "./cloudflared.exe", "./cloudflared"} {
+		if _, err := os.Stat(cand); err == nil {
+			exe = cand
+			break
+		}
+	}
+	cmd := exec.Command(exe, "tunnel", "run", "--token", tunnelToken)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	log.Printf("starting cloudflared tunnel via %s", exe)
+	if err := cmd.Run(); err != nil {
+		log.Printf("cloudflared exited: %v", err)
+	}
+}
+
 func main() {
 	config := loadConfig()
 	// Ensure the data directory exists (SQLite cannot create parent dirs).
@@ -1783,6 +1809,11 @@ func main() {
 		}
 	}
 	log.Printf("9Drive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
+
+	// Cloudflare Tunnel (optional): set TUNNEL_TOKEN (managed tunnel) or leave unset.
+	if token := os.Getenv("TUNNEL_TOKEN"); token != "" {
+		go runTunnel(config, token)
+	}
 
 	// Daily backup: VACUUM INTO a temp file (consistent snapshot even under WAL), then atomically overwrite the single .bak file.
 	go func() {
