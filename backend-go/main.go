@@ -1333,6 +1333,7 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 		return 0, 0, err
 	}
 	// Paginated listing: loop through all pages via nextPageToken (Google caps 1000/page).
+	seen := map[string]bool{}
 	pageToken := ""
 	for {
 		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`
@@ -1374,6 +1375,7 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 			if item.ID == "" || item.Trashed {
 				continue
 			}
+			seen[item.ID] = true
 			var size int64
 			_, _ = fmt.Sscan(item.Size, &size)
 			var exists int
@@ -1394,6 +1396,35 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 			break
 		}
 		pageToken = payload.NextPageToken
+	}
+	// Trash handling: files in DB for this account that Google no longer lists are removed from Drive. Soft-delete them so listings stop showing zombies.
+	// A successful full listing is required: if the last page errored we would have returned earlier, so `seen` is complete here.
+	rows, err := a.DB.Query(`SELECT provider_file_id FROM files WHERE user_id=? AND connected_account_id=? AND status='active' AND provider='google_drive'`, userID, accountID)
+	if err != nil {
+		return created, updated, err
+	}
+	var missing []string
+	for rows.Next() {
+		var pfid string
+		if rows.Scan(&pfid) == nil && pfid != "" && !seen[pfid] {
+			missing = append(missing, pfid)
+		}
+	}
+	rows.Close()
+	if len(missing) > 0 {
+		placeholders := strings.Repeat("?,", len(missing))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := []any{userID, accountID}
+		for _, pfid := range missing {
+			args = append(args, pfid)
+		}
+		res, err := a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=? WHERE user_id=? AND connected_account_id=? AND status='active' AND provider_file_id IN (`+placeholders+`)`, append([]any{time.Now().UTC().Format(time.RFC3339Nano)}, args...)...)
+		if err != nil {
+			return created, updated, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("sync: marked %d file(s) as deleted for account %s", n, accountID)
+		}
 	}
 	return created, updated, nil
 }
