@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -104,7 +105,11 @@ func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		return strings.TrimSpace(strings.Split(fwd, ",")[0])
 	}
-	return r.RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type authUser struct {
@@ -1666,6 +1671,10 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (a *App) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("Access-Control-Allow-Origin", a.Config.FrontendURL)
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
@@ -1765,6 +1774,13 @@ func main() {
 	}
 	if err := app.bootstrapGoogleConfig(); err != nil {
 		log.Fatal(err)
+	}
+	// Production guard: refuse default secrets once real OAuth credentials are configured.
+	// Bypass with APP_ENV=development for local testing.
+	if os.Getenv("APP_ENV") != "development" && config.GoogleClientID != "" {
+		if config.JWTSecret == "change-this-jwt-secret-before-production" || config.TokenKey == "change-this-token-key-before-production" || len(config.TokenKey) != 32 {
+			log.Fatal(" refusing to start with default JWT_ACCESS_SECRET/TOKEN_ENCRYPTION_KEY. Set 32-byte TOKEN_ENCRYPTION_KEY and a strong JWT_ACCESS_SECRET in .env")
+		}
 	}
 	log.Printf("9Drive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
 
