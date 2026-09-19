@@ -117,6 +117,22 @@ type ctxKey string
 
 const userKey ctxKey = "user"
 
+// dbFilePathFromURL extracts the plain file path of a sqlite file: URL.
+func dbFilePathFromURL(databaseURL string) string {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		return ""
+	}
+	path := u.Path
+	if path == "" {
+		path = u.Opaque
+	}
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
 // dataDirFromURL extracts the directory part of a sqlite file: URL, if any.
 func dataDirFromURL(databaseURL string) string {
 	u, err := url.Parse(databaseURL)
@@ -1720,6 +1736,42 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("9Drive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
+
+	// Daily backup: VACUUM INTO a temp file (consistent snapshot even under WAL), then atomically overwrite the single .bak file.
+	go func() {
+		dbPath := dbFilePathFromURL(config.DatabaseURL)
+		if dbPath == "" {
+			return
+		}
+		backupPath := dbPath + ".bak"
+		for {
+			// Run immediately on startup if no backup yet or the last one is stale (>24h).
+			if st, err := os.Stat(backupPath); err != nil || time.Since(st.ModTime()) > 24*time.Hour {
+				tmp := backupPath + ".tmp"
+				_ = os.Remove(tmp)
+				if _, err := app.DB.Exec(`VACUUM INTO ?`, tmp); err == nil {
+					if err := os.Rename(tmp, backupPath); err == nil {
+						log.Printf("backup written: %s", backupPath)
+					}
+				} else {
+					_ = os.Remove(tmp)
+				}
+			}
+			time.Sleep(24 * time.Hour)
+			tmp := backupPath + ".tmp"
+			_ = os.Remove(tmp)
+			if _, err := app.DB.Exec(`VACUUM INTO ?`, tmp); err != nil {
+				log.Printf("daily backup failed (vacuum): %v", err)
+				continue
+			}
+			if err := os.Rename(tmp, backupPath); err != nil {
+				_ = os.Remove(tmp)
+				log.Printf("daily backup failed (rename): %v", err)
+				continue
+			}
+			log.Printf("daily backup written: %s", backupPath)
+		}
+	}()
 
 	// Background sync: quota + file metadata for all connected accounts every 5 minutes.
 	go func() {
