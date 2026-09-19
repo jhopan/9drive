@@ -158,3 +158,12 @@ nssm start 9drive
 ### Cloudflare Tunnel (optional, HTTPS tanpa reverse proxy)
 
 Set `TUNNEL_TOKEN` di .env (Cloudflare Zero Trust > Networks > Tunnels > Create > copy token). Letakkan binary `cloudflared` di samping binary 9drive — backend otomatis menjalankannya saat startup. Aplikasi langsung reachable via HTTPS domain tunnel, tanpa nginx/Caddy.
+
+
+### Tunnel dua mode
+
+**Managed (dashboard):** `.env` -> `TUNNEL_TOKEN=...`. Mapping hostname->port diatur di dashboard Cloudflare (Public Hostname -> service `http://localhost:4000`).
+
+**Locally-managed (custom penuh):** `.env` -> `TUNNEL_ID=<uuid>` + file `tunnel.yml` di samping binary (lihat `tunnel.yml.example`). Semua mapping hostname/port/path ada di file — bisa banyak domain, beda port, bahkan path routing.
+
+**URL menyesuaikan otomatis:** frontend disajikan dari binary yang sama (satu origin), fetch API pakai `/api/*` relative. OAuth redirect URI di-rebuild dari `X-Forwarded-Host`/`Host` request — jadi akses dari domain mana pun (`drive.jhopan.my.id`, IP, dst), redirect URI ikut domain itu tanpa ganti .env. Catatan: `X-Forwarded-*` dipercaya hanya untuk rebuild localhost redirect; pastikan hanya proxy/tunnel kamu yang bisa mengirim header itu (default tunnel/CF memang begitu).

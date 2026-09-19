@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+"path/filepath"
 	"os/exec"
 	"strings"
 	"sync"
@@ -405,6 +405,11 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /uploads/resumable/status/{id}", a.requireAuth(a.resumableStatus))
 	mux.HandleFunc("PUT /uploads/resumable/chunk/{id}", a.requireAuth(a.resumableChunk))
 	mux.HandleFunc("/", serveSPA())
+	// Support same-origin deployments where the frontend calls /api/*: strip the prefix and forward.
+	apiStrip := http.StripPrefix("/api", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	mux.Handle("/api/", apiStrip)
 	return a.cors(mux)
 }
 
@@ -678,6 +683,16 @@ func (a *App) googleConnectURL(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 500, "OAUTH_STATE_FAILED", "Unable to create OAuth session.")
 		return
+	}
+	// Host-relative redirect: when the stored redirect URI points at localhost (dev default) but the
+	// request arrives via a real domain (tunnel/proxy), rebuild it against the request host so the
+	// same config works from any domain without re-registering each one in Google Console.
+	if u, err := url.Parse(redirectURI); err == nil && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
+		if host := forwardedHost(r); host != "" {
+			u.Host = host
+			u.Scheme = requestScheme(r)
+			redirectURI = u.String()
+		}
 	}
 	values := url.Values{"client_id": {clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"}, "access_type": {"offline"}, "prompt": {"consent"}, "include_granted_scopes": {"true"}, "scope": {strings.Join(parseScopes(scopes), " ")}, "state": {state}}
 	writeJSON(w, http.StatusOK, map[string]string{"url": "https://accounts.google.com/o/oauth2/v2/auth?" + values.Encode()})
@@ -1762,8 +1777,33 @@ func (a *App) decrypt(value string) (string, error) {
 	return string(plain), err
 }
 
-// runTunnel spawns cloudflared (adjacent binary or in PATH) connected to the given tunnel token.
-func runTunnel(config Config, tunnelToken string) {
+// requestScheme detects https behind proxies/tunnels.
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+	if os.Getenv("FORCE_HTTPS") == "true" {
+		return "https"
+	}
+	return "http"
+}
+
+// forwardedHost returns the public host (X-Forwarded-Host or Host) that the client used.
+func forwardedHost(r *http.Request) string {
+	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+		return strings.TrimSpace(strings.Split(fh, ",")[0])
+	}
+	if r.Host != "" && r.Host != "127.0.0.1:4000" && r.Host != "localhost:4000" {
+		return r.Host
+	}
+	return ""
+}
+
+// runCloudflared spawns cloudflared (adjacent binary or in PATH) with the given args.
+func runCloudflared(args ...string) {
 	exe := "cloudflared"
 	for _, cand := range []string{"cloudflared.exe", "cloudflared", "./cloudflared.exe", "./cloudflared"} {
 		if _, err := os.Stat(cand); err == nil {
@@ -1771,13 +1811,23 @@ func runTunnel(config Config, tunnelToken string) {
 			break
 		}
 	}
-	cmd := exec.Command(exe, "tunnel", "run", "--token", tunnelToken)
+	full := append([]string{exe}, args...)
+	log.Printf("starting %s", strings.Join(full, " "))
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	log.Printf("starting cloudflared tunnel via %s", exe)
 	if err := cmd.Run(); err != nil {
 		log.Printf("cloudflared exited: %v", err)
 	}
+}
+
+// tunnelConfigPath returns the tunnel.yml path next to the executable.
+func tunnelConfigPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "tunnel.yml"
+	}
+	return filepath.Join(filepath.Dir(exePath), "tunnel.yml")
 }
 
 func main() {
@@ -1812,7 +1862,12 @@ func main() {
 
 	// Cloudflare Tunnel (optional): set TUNNEL_TOKEN (managed tunnel) or leave unset.
 	if token := os.Getenv("TUNNEL_TOKEN"); token != "" {
-		go runTunnel(config, token)
+		// Managed tunnel: hostname->service mapping lives in the Cloudflare dashboard.
+		go runCloudflared("tunnel", "run", "--token", token)
+	} else if id := os.Getenv("TUNNEL_ID"); id != "" {
+		// Locally-managed tunnel: hostname->service mapping lives in tunnel.yml next to the binary.
+		args := []string{"tunnel", "--config", tunnelConfigPath(), "run", id}
+		go runCloudflared(args...)
 	}
 
 	// Daily backup: VACUUM INTO a temp file (consistent snapshot even under WAL), then atomically overwrite the single .bak file.
