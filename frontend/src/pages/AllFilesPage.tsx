@@ -423,8 +423,21 @@ export function AllFilesPage() {
     async function downloadFile() {
     const fileId = activeFile?.id ?? contextMenu.file?.id
     if (!fileId) return
-    const token = getAccessToken()
-    window.location.href = API_URL + '/files/' + fileId + '/download?token=' + token
+    try {
+      const response = await fetch(API_URL + '/files/' + fileId + '/download', {
+        headers: { Authorization: `Bearer ${getAccessToken()}` }
+      })
+      if (!response.ok) throw new Error('Download failed')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = contextMenu.file?.name || activeFile?.name || 'download'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Download failed')
+    }
     setContextMenu({ x: 0, y: 0, file: null })
   }
 
@@ -434,18 +447,22 @@ export function AllFilesPage() {
     setLoading(true)
     setMessage('')
     try {
-      const token = getAccessToken()
-      const form = document.createElement('form')
-      form.method = 'POST'
-      form.action = API_URL + '/files/batch-download?token=' + token
-      const input = document.createElement('input')
-      input.type = 'hidden'
-      input.name = 'fileIds'
-      input.value = JSON.stringify(selectedIds)
-      form.appendChild(input)
-      document.body.appendChild(form)
-      form.submit()
-      form.remove()
+      const response = await fetch(API_URL + '/files/batch-download', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${getAccessToken()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ fileIds: selectedIds })
+      })
+      if (!response.ok) throw new Error('Batch download failed')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = '9drive-download.zip'
+      a.click()
+      URL.revokeObjectURL(url)
       clearSelection()
       setMessage('Download started.')
     } catch (error) {

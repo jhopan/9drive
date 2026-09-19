@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -48,6 +49,55 @@ type App struct {
 	GoogleUserInfoURL  string
 	GoogleDriveAPIURL  string
 	GoogleUploadAPIURL string
+	loginFails         map[string]*loginFail
+	loginMu            sync.Mutex
+}
+
+type loginFail struct {
+	count        int
+	blockedUntil time.Time
+}
+
+// Login limiter: 5 failures per IP -> 15 minute block.
+func (a *App) loginBlocked(ip string) (bool, time.Duration) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	f, ok := a.loginFails[ip]
+	if !ok {
+		return false, 0
+	}
+	if !f.blockedUntil.IsZero() && time.Now().Before(f.blockedUntil) {
+		return true, time.Until(f.blockedUntil)
+	}
+	return false, 0
+}
+
+func (a *App) loginRecordFailure(ip string) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	f := a.loginFails[ip]
+	if f == nil {
+		f = &loginFail{}
+		a.loginFails[ip] = f
+	}
+	f.count++
+	if f.count >= 5 {
+		f.blockedUntil = time.Now().Add(15 * time.Minute)
+		f.count = 0
+	}
+}
+
+func (a *App) loginRecordSuccess(ip string) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	delete(a.loginFails, ip)
+}
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+	return r.RemoteAddr
 }
 
 type authUser struct {
@@ -170,13 +220,24 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
 }
 
 func (a *App) ensureInitialAdmin() error {
-	var count int
-	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil { return err }
-	if count != 0 { return nil }
-	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
-	if err != nil { return err }
-	_, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash))
+	_, err := a.ensureInitialAdminPassword()
 	return err
+}
+
+// ensureInitialAdminPassword creates the bootstrap admin and returns the generated password (empty if admin already exists).
+func (a *App) ensureInitialAdminPassword() (string, error) {
+	var count int
+	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil { return "", err }
+	if count != 0 { return "", nil }
+	// Random one-time password, shown once in the log on first run.
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil { return "", err }
+	password := hex.EncodeToString(buf)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil { return "", err }
+	if _, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash)); err != nil { return "", err }
+	log.Printf("Initial admin account created: admin@gmail.com / %s  (change this password after first login)", password)
+	return password, nil
 }
 
 func (a *App) bootstrapGoogleConfig() error {
@@ -297,6 +358,11 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if blocked, wait := a.loginBlocked(ip); blocked {
+		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", fmt.Sprintf("Too many failed attempts. Try again in %d minutes.", int(wait.Minutes())+1))
+		return
+	}
 	var body struct{ Email, Password string }
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -306,9 +372,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	var hash string
 	err := a.DB.QueryRow(`SELECT id,name,email,password_hash FROM users WHERE email = ? AND status = 'active'`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&user.ID, &user.Name, &user.Email, &hash)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
+		a.loginRecordFailure(ip)
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password.")
 		return
 	}
+	a.loginRecordSuccess(ip)
 	a.respondSession(w, http.StatusOK, user)
 }
 
@@ -1563,7 +1631,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	app := &App{DB: db, Config: config, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files"}
+	app := &App{DB: db, Config: config, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files", loginFails: map[string]*loginFail{}}
 	if err := app.migrate(); err != nil {
 		log.Fatal(err)
 	}

@@ -9,8 +9,9 @@ import (
 
 func TestEmptyDatabaseBootstrapsDefaultAdmin(t *testing.T) {
 	app := newTestApp(t)
-	if err := app.ensureInitialAdmin(); err != nil { t.Fatal(err) }
-	request := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"email":"admin@gmail.com","password":"admin"}`))
+	password, err := app.ensureInitialAdminPassword()
+	if err != nil { t.Fatal(err) }
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"email":"admin@gmail.com","password":"`+password+`"}`))
 	w := httptest.NewRecorder()
 	app.Router().ServeHTTP(w, request)
 	if w.Code != http.StatusOK {
